@@ -53,6 +53,9 @@ export async function buildServer(): Promise<FastifyInstance> {
         version: '1.0.0',
       },
       servers: [
+        ...(process.env.PUBLIC_URL
+          ? [{ url: process.env.PUBLIC_URL, description: 'Production' }]
+          : []),
         {
           url: `http://localhost:${process.env.PORT ?? 3000}`,
           description: 'Local',
