@@ -12,16 +12,22 @@ import {
 import { registerRoutes } from './routes';
 
 export async function buildServer(): Promise<FastifyInstance> {
+  const usePretty = process.env.LOG_PRETTY !== 'false';
+
   const app = Fastify({
     logger: {
       level: process.env.LOG_LEVEL ?? 'info',
-      transport:
-        process.env.NODE_ENV === 'production'
-          ? undefined
-          : {
-              target: 'pino-pretty',
-              options: { colorize: true, translateTime: 'HH:MM:ss Z' },
+      transport: usePretty
+        ? {
+            target: 'pino-pretty',
+            options: {
+              colorize: true,
+              translateTime: 'HH:MM:ss Z',
+              ignore: 'pid,hostname',
+              singleLine: false,
             },
+          }
+        : undefined,
     },
     trustProxy: true,
   }).withTypeProvider<ZodTypeProvider>();

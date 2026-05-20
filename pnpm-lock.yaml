@@ -35,6 +35,9 @@ importers:
       node-cron:
         specifier: ^3.0.3
         version: 3.0.3
+      pino-pretty:
+        specifier: ^11.2.2
+        version: 11.3.0
       zod:
         specifier: ^3.23.8
         version: 3.25.76
@@ -45,9 +48,6 @@ importers:
       '@types/node-cron':
         specifier: ^3.0.11
         version: 3.0.11
-      pino-pretty:
-        specifier: ^11.2.2
-        version: 11.3.0
       ts-node-dev:
         specifier: ^2.0.0
         version: 2.0.0(@types/node@20.19.41)(typescript@5.9.3)
