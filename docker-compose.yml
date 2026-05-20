@@ -6,6 +6,9 @@ services:
       - "3000:3000"
     env_file:
       - .env
+    environment:
+      # Override de .env: en Docker siempre corremos como prod (logger JSON, sin pino-pretty)
+      NODE_ENV: production
     volumes:
       - ./src:/app/src
     restart: unless-stopped
