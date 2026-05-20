@@ -11,3 +11,4 @@ backend-plan.md
 .vscode
 .idea
 coverage
+.pnpm-store

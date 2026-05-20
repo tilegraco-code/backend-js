@@ -33,22 +33,28 @@ src/
 
 ## Setup local
 
+Requiere Node 20+ y [pnpm](https://pnpm.io) (`brew install pnpm` o `corepack enable`).
+
 ```bash
 cp .env.example .env       # Completar SUPABASE_URL y SERVICE_ROLE_KEY
-npm install
-npm run dev                # ts-node-dev con hot reload
+pnpm install
+pnpm dev                   # ts-node-dev con hot reload
 ```
 
-Servidor en `http://localhost:3000`. Healthcheck en `GET /health`.
+Servidor en `http://localhost:3000`.
+
+- Healthcheck: `GET /health`
+- Documentación interactiva (Swagger UI): [http://localhost:3000/docs](http://localhost:3000/docs)
+- OpenAPI JSON: `GET /docs/json`
 
 ## Scripts
 
 | Comando | Descripción |
 |---|---|
-| `npm run dev` | Modo desarrollo con hot reload |
-| `npm run build` | Compila TS a `dist/` |
-| `npm start` | Corre la build de producción |
-| `npm run typecheck` | Solo valida tipos |
+| `pnpm dev` | Modo desarrollo con hot reload |
+| `pnpm build` | Compila TS a `dist/` |
+| `pnpm start` | Corre la build de producción |
+| `pnpm typecheck` | Solo valida tipos |
 
 ## Variables de entorno
 
@@ -71,7 +77,9 @@ Todas las rutas bajo `/api/*` requieren el header:
 x-internal-token: <INTERNAL_TOKEN>
 ```
 
-o equivalentemente `Authorization: Bearer <INTERNAL_TOKEN>`. La ruta `/health` queda pública para el healthcheck de EasyPanel.
+o equivalentemente `Authorization: Bearer <INTERNAL_TOKEN>`. Las rutas `/health` y `/docs` quedan públicas (la primera para el healthcheck de EasyPanel; la segunda para la doc de Swagger).
+
+En Swagger UI hacé click en **Authorize** y pegá el token — queda guardado entre recargas (`persistAuthorization: true`).
 
 ## Docker
 

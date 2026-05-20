@@ -1,15 +1,17 @@
-FROM node:20-alpine AS builder
+FROM node:20-alpine AS base
+RUN corepack enable
 WORKDIR /app
-COPY package*.json ./
-RUN npm install
-COPY . .
-RUN npm run build
 
-FROM node:20-alpine AS production
-WORKDIR /app
+FROM base AS builder
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY . .
+RUN pnpm build
+
+FROM base AS production
 ENV NODE_ENV=production
-COPY package*.json ./
-RUN npm install --omit=dev
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile --prod
 COPY --from=builder /app/dist ./dist
 EXPOSE 3000
 CMD ["node", "dist/index.js"]
