@@ -31,11 +31,11 @@ const messageWebhookSchema = z
     account_type: z.string(),
     account_info: z
       .object({
-        user_id: z.string(),
-        feature: z.string().nullable(),
+        user_id: z.string().nullish(),
+        feature: z.string().nullish(),
       })
-      .nullable()
-      .optional(),
+      .passthrough()
+      .nullish(),
     chat_id: z.string(),
     message_id: z.string(),
     message: z.string(),

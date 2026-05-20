@@ -15,8 +15,8 @@ export type UnipileWebhookPayload = {
   account_id: string;
   account_type: string;
   account_info?: {
-    user_id: string;
-    feature: string | null;
+    user_id?: string | null;
+    feature?: string | null;
   } | null;
   chat_id: string;
   message_id: string;
