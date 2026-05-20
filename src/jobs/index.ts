@@ -1,6 +1,7 @@
 import type { FastifyBaseLogger } from 'fastify';
 import type { ScheduledTask } from 'node-cron';
 import { registerExampleJob } from './example.job';
+import { registerUnipileFollowUpJob } from './unipile-follow-up.job';
 
 let tasks: ScheduledTask[] = [];
 
@@ -10,7 +11,7 @@ export function startJobs(log: FastifyBaseLogger): void {
     return;
   }
 
-  tasks = [registerExampleJob(log)];
+  tasks = [registerExampleJob(log), registerUnipileFollowUpJob(log)];
   log.info({ count: tasks.length }, 'Cron jobs iniciados');
 }
 
