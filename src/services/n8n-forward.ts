@@ -2,17 +2,27 @@ import { FastifyBaseLogger } from 'fastify';
 import { supabase } from '../lib/supabase';
 
 /**
- * Forwarder genérico desde un webhook (Unipile o Evolution) hacia el workflow
- * n8n vinculado. POSTea el payload tal cual (crudo) al webhook del workflow.
+ * Formato ÚNICO que recibe n8n, sin importar el provider (Unipile / Evolution).
+ * Cada servicio normaliza su payload a esto antes de forwardear, así los flows
+ * de n8n parsean siempre los mismos campos y no se rompen entre providers.
+ */
+export type N8nForwardPayload = {
+  chat_id: string;
+  nombre: string;
+  question: string;
+};
+
+/**
+ * Forwarder hacia el workflow n8n vinculado. POSTea el envelope normalizado.
  *
- * Es payload-agnóstico: solo resuelve `n8n_workflow.webhook_path` por id y hace
- * el POST. La decisión de SI forwardear (chat en estado `ia` + workflow asignado)
- * la toma el servicio que llama, igual que antes.
+ * Solo resuelve `n8n_workflow.webhook_path` por id y hace el POST. La decisión
+ * de SI forwardear (chat en estado `ia` + workflow asignado) la toma el servicio
+ * que llama.
  *
  * Pensado para llamarse via setImmediate post-reply, así no bloquea el ACK.
  */
 export async function forwardToN8n(
-  payload: unknown,
+  payload: N8nForwardPayload,
   workflowId: number,
   log: FastifyBaseLogger,
 ): Promise<void> {

@@ -80,7 +80,7 @@ const tokenQuerySchema = z.object({
 export async function unipileWebhookRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
 
-  // POST /webhooks/unipile/accounts — status de cuenta
+  // POST /api/webhooks/unipile/accounts — status de cuenta
   r.post(
     '/unipile/accounts',
     {
@@ -107,7 +107,7 @@ export async function unipileWebhookRoutes(app: FastifyInstance): Promise<void> 
     },
   );
 
-  // POST /webhooks/unipile/:clientId/account-connected — callback de hosted auth
+  // POST /api/webhooks/unipile/:clientId/account-connected — callback de hosted auth
   // Auth propio (connection_token contra DB), no usa unipileWebhookAuth
   r.post(
     '/unipile/:clientId/account-connected',
@@ -147,7 +147,7 @@ export async function unipileWebhookRoutes(app: FastifyInstance): Promise<void> 
     },
   );
 
-  // POST /webhooks/unipile/:clientId — webhook principal (message_received)
+  // POST /api/webhooks/unipile/:clientId — webhook principal (message_received)
   r.post(
     '/unipile/:clientId',
     {
@@ -177,8 +177,7 @@ export async function unipileWebhookRoutes(app: FastifyInstance): Promise<void> 
       // Responder a Unipile inmediatamente; el forward a n8n va en background
       // para no bloquear el ACK del webhook.
       if (result.forward) {
-        const { workflowId } = result.forward;
-        const payload = request.body;
+        const { workflowId, payload } = result.forward;
         const log = request.log;
         setImmediate(() => {
           unipileWebhookService.forwardToN8n(payload, workflowId, log).catch(() => {

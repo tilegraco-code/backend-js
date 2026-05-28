@@ -1,6 +1,6 @@
 import { FastifyBaseLogger } from 'fastify';
 import { supabase } from '../lib/supabase';
-import { forwardToN8n } from './n8n-forward';
+import { forwardToN8n, type N8nForwardPayload } from './n8n-forward';
 import type {
   EvolutionConnectionUpdateData,
   EvolutionMessageContent,
@@ -64,7 +64,7 @@ export const evolutionWebhookService = {
   async processMessage(
     payload: EvolutionWebhookPayload,
     log: FastifyBaseLogger,
-  ): Promise<ProcessResult & { forward?: { workflowId: number } }> {
+  ): Promise<ProcessResult & { forward?: { workflowId: number; payload: N8nForwardPayload } }> {
     const instance = payload.instance;
     if (!instance) {
       return { ok: true, skipped: 'no_instance' };
@@ -176,7 +176,17 @@ export const evolutionWebhookService = {
         .single();
 
       if (chat?.state === 'ia' && chat.workflow_id) {
-        return { ok: true, forward: { workflowId: chat.workflow_id } };
+        return {
+          ok: true,
+          forward: {
+            workflowId: chat.workflow_id,
+            payload: {
+              chat_id: chatId,
+              nombre: contactName,
+              question: text,
+            },
+          },
+        };
       }
     }
 

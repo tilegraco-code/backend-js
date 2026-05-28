@@ -1,6 +1,6 @@
 import { FastifyBaseLogger } from 'fastify';
 import { supabase } from '../lib/supabase';
-import { forwardToN8n } from './n8n-forward';
+import { forwardToN8n, type N8nForwardPayload } from './n8n-forward';
 import type {
   UnipileAccountStatus,
   UnipileAccountStatusPayload,
@@ -39,7 +39,7 @@ export const unipileWebhookService = {
   async processMessage(
     payload: UnipileWebhookPayload,
     log: FastifyBaseLogger,
-  ): Promise<ProcessResult & { forward?: { workflowId: number } }> {
+  ): Promise<ProcessResult & { forward?: { workflowId: number; payload: N8nForwardPayload } }> {
     if (payload.event !== 'message_received') {
       return { ok: true, skipped: payload.event };
     }
@@ -164,7 +164,17 @@ export const unipileWebhookService = {
         .single();
 
       if (chat?.state === 'ia' && chat.workflow_id) {
-        return { ok: true, forward: { workflowId: chat.workflow_id } };
+        return {
+          ok: true,
+          forward: {
+            workflowId: chat.workflow_id,
+            payload: {
+              chat_id,
+              nombre: sender.attendee_name,
+              question: message,
+            },
+          },
+        };
       }
     }
 

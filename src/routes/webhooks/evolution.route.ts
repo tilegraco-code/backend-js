@@ -69,10 +69,10 @@ export async function evolutionWebhookRoutes(app: FastifyInstance): Promise<void
 
         // ACK inmediato; el forward a n8n va en background para no bloquear.
         if (result.forward) {
-          const { workflowId } = result.forward;
+          const { workflowId, payload: n8nPayload } = result.forward;
           const log = request.log;
           setImmediate(() => {
-            evolutionWebhookService.forwardToN8n(payload, workflowId, log).catch(() => {
+            evolutionWebhookService.forwardToN8n(n8nPayload, workflowId, log).catch(() => {
               /* errores ya logueados dentro */
             });
           });

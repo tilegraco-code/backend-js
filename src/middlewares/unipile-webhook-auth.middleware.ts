@@ -2,9 +2,9 @@ import { FastifyReply, FastifyRequest } from 'fastify';
 
 /**
  * Valida el query param ?token=... contra UNIPILE_WEBHOOK_SECRET.
- * Se usa para /webhooks/unipile/:clientId (mensajes) y /webhooks/unipile/accounts (status).
+ * Se usa para /api/webhooks/unipile/:clientId (mensajes) y /api/webhooks/unipile/accounts (status).
  *
- * El callback /webhooks/unipile/:clientId/account-connected NO usa este middleware:
+ * El callback /api/webhooks/unipile/:clientId/account-connected NO usa este middleware:
  * su token es un connection_token por inbox que se valida contra la fila en DB.
  */
 export async function unipileWebhookAuth(
