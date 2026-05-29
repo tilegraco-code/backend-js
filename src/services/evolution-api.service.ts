@@ -47,4 +47,32 @@ export const evolutionApiService = {
 
     return (await res.json()) as EvolutionSendTextResponse;
   },
+
+  /**
+   * Cierra la sesión de WhatsApp de una instancia. No es bloqueante: puede
+   * fallar si la sesión ya estaba cerrada (se ignora el error en el caller).
+   */
+  async logoutInstance(instanceName: string): Promise<void> {
+    const { baseUrl, apiKey } = getCreds();
+    const url = `${baseUrl}/instance/logout/${encodeURIComponent(instanceName)}`;
+    const res = await fetch(url, { method: 'DELETE', headers: { apikey: apiKey } });
+    if (!res.ok && res.status !== 404) {
+      const errText = await res.text();
+      throw new Error(`Evolution logout ${res.status}: ${errText}`);
+    }
+  },
+
+  /**
+   * Elimina por completo una instancia de Evolution. Un 404 (instancia ya
+   * inexistente) se trata como éxito.
+   */
+  async deleteInstance(instanceName: string): Promise<void> {
+    const { baseUrl, apiKey } = getCreds();
+    const url = `${baseUrl}/instance/delete/${encodeURIComponent(instanceName)}`;
+    const res = await fetch(url, { method: 'DELETE', headers: { apikey: apiKey } });
+    if (!res.ok && res.status !== 404) {
+      const errText = await res.text();
+      throw new Error(`Evolution delete ${res.status}: ${errText}`);
+    }
+  },
 };

@@ -3,6 +3,7 @@ import { healthRoute } from './health.route';
 import { exampleRoute } from './example.route';
 import { webhookRoutes } from './webhooks';
 import { adminFollowUpRoute } from './admin/follow-up.route';
+import { adminAccountLifecycleRoute } from './admin/account-lifecycle.route';
 import { internalTokenAuth } from '../middlewares/auth.middleware';
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
@@ -19,6 +20,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       api.addHook('onRequest', internalTokenAuth);
       await api.register(exampleRoute, { prefix: '/example' });
       await api.register(adminFollowUpRoute, { prefix: '/admin' });
+      await api.register(adminAccountLifecycleRoute, { prefix: '/admin' });
     },
     { prefix: '/api' },
   );

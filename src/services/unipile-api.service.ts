@@ -33,4 +33,22 @@ export const unipileApiService = {
 
     return (await res.json()) as UnipileSendMessageResponse;
   },
+
+  /**
+   * Desconecta y elimina una cuenta en Unipile. Idempotente desde el punto de
+   * vista del CRON: un 404 (cuenta ya inexistente) se trata como éxito.
+   */
+  async deleteAccount(accountId: string): Promise<void> {
+    const { dsn, apiKey } = getCreds();
+    const url = `${dsn.replace(/\/$/, '')}/api/v1/accounts/${encodeURIComponent(accountId)}`;
+    const res = await fetch(url, {
+      method: 'DELETE',
+      headers: { 'X-API-KEY': apiKey },
+    });
+
+    if (!res.ok && res.status !== 404) {
+      const errText = await res.text();
+      throw new Error(`Unipile deleteAccount ${res.status}: ${errText}`);
+    }
+  },
 };
