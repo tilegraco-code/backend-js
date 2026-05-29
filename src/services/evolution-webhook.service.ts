@@ -93,10 +93,15 @@ export const evolutionWebhookService = {
     const event = (payload.event ?? '').toLowerCase();
     const isOwn = data.key.fromMe === true || event === 'send.message';
     const direction = isOwn ? 'outgoing' : 'incoming';
-    const chatId = data.key.remoteJid;
+    // El remoteJid (numero@s.whatsapp.net) solo es unico dentro de una instancia.
+    // Prefijamos con la instancia para tener un chat_id unico global (dos clientes
+    // o dos lineas hablando con el mismo numero no colisionan). El numero crudo
+    // queda en contact_handle, asi que el saliente no necesita parsear el chat_id.
+    const remoteJid = data.key.remoteJid;
+    const chatId = `${instance}:${remoteJid}`;
     const messageId = data.key.id;
     const msgAt = parseTimestamp(data.messageTimestamp);
-    const contactHandle = jidToHandle(chatId);
+    const contactHandle = jidToHandle(remoteJid);
     const contactName = data.pushName?.trim() || contactHandle || 'Usuario Desconocido';
     const workflowId: number | null = inbox.workflow_id ?? null;
     const clientId = inbox.client_id;

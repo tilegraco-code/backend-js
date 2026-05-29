@@ -75,7 +75,11 @@ async function sendOutgoing(
           return { ok: false, status: 422, error: 'Inbox no conectado' };
         }
         const instanceName = chat.account_id as string;
-        const number = chatId.split('@')[0];
+        // El chat_id de Evolution es `${instance}:${remoteJid}`, asi que NO lo
+        // parseamos para el numero: lo tomamos de contact_handle (el numero crudo).
+        // Fallback defensivo: strip del prefijo de instancia y del dominio @.
+        const number =
+          chat.contact_handle ?? (chatId.split('@')[0]?.split(':').pop() as string);
         const resp = await evolutionApiService.sendText({ instanceName, number, text });
         messageId = resp.key?.id ?? randomUUID();
       } else {
