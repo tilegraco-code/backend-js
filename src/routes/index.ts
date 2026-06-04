@@ -5,6 +5,8 @@ import { webhookRoutes } from './webhooks';
 import { messagesRoute } from './messages.route';
 import { adminFollowUpRoute } from './admin/follow-up.route';
 import { adminAccountLifecycleRoute } from './admin/account-lifecycle.route';
+import { tiendanubeOauthRoutes } from './tiendanube-oauth.route';
+import { tiendanubeRoutes } from './tiendanube.route';
 import { internalTokenAuth } from '../middlewares/auth.middleware';
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
@@ -16,6 +18,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // internalTokenAuth del scope /api de más abajo (los hooks son encapsulados).
   await app.register(webhookRoutes, { prefix: '/api/webhooks' });
 
+  // OAuth de TiendaNube: público (lo pega el navegador / TiendaNube). La seguridad
+  // la da el `state` firmado, no el internalTokenAuth. Por eso va fuera del scope /api.
+  await app.register(tiendanubeOauthRoutes, { prefix: '/api/tiendanube' });
+
   await app.register(
     async (api) => {
       api.addHook('onRequest', internalTokenAuth);
@@ -23,6 +29,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await api.register(messagesRoute, { prefix: '/messages' });
       await api.register(adminFollowUpRoute, { prefix: '/admin' });
       await api.register(adminAccountLifecycleRoute, { prefix: '/admin' });
+      await api.register(tiendanubeRoutes, { prefix: '/tiendanube' });
     },
     { prefix: '/api' },
   );
