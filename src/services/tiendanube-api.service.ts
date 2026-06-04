@@ -82,29 +82,46 @@ export const tiendanubeApiService = {
     return (await res.json()) as T;
   },
 
+  /**
+   * Igual que request() pero para colecciones paginadas: TiendaNube devuelve 404
+   * ("Last page is 0") cuando la colección está vacía o el filtro no matchea, en
+   * lugar de un array vacío. Tratamos ese caso como [].
+   */
+  async requestList(storeId: number, token: string, path: string): Promise<unknown[]> {
+    const { userAgent } = getCreds();
+    const url = `${API_BASE}/${storeId}${path}`;
+    const res = await fetch(url, {
+      headers: {
+        Authentication: `bearer ${token}`,
+        'User-Agent': userAgent,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (res.status === 404) return []; // colección vacía
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Tiendanube GET ${path} ${res.status}: ${errText}`);
+    }
+
+    return (await res.json()) as unknown[];
+  },
+
   async fetchStore(storeId: number, token: string): Promise<TiendanubeStore> {
     return this.request<TiendanubeStore>(storeId, token, '/store');
   },
 
   async fetchProducts(storeId: number, token: string): Promise<unknown[]> {
     // Snapshot: primera página amplia. La caché evita pegarle más de 1x/hora.
-    return this.request<unknown[]>(
-      storeId,
-      token,
-      '/products?per_page=200&published=true',
-    );
+    return this.requestList(storeId, token, '/products?per_page=200&published=true');
   },
 
   async fetchOrders(storeId: number, token: string): Promise<unknown[]> {
-    return this.request<unknown[]>(
-      storeId,
-      token,
-      '/orders?per_page=50&sort_by=created_at-descending',
-    );
+    return this.requestList(storeId, token, '/orders?per_page=50&sort_by=created_at-descending');
   },
 
   async fetchCarts(storeId: number, token: string): Promise<unknown[]> {
     // Carritos abandonados. Si el path difiere en tu app, ajustar acá.
-    return this.request<unknown[]>(storeId, token, '/checkouts?per_page=50');
+    return this.requestList(storeId, token, '/checkouts?per_page=50');
   },
 };
