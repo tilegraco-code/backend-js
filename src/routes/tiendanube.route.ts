@@ -65,13 +65,14 @@ function variantOptions(attributes: I18n[], v: RawVariant): string[] {
     .filter((x): x is string => Boolean(x));
 }
 
-function shapeProduct(raw: RawProduct): Record<string, unknown> {
+function shapeProduct(raw: RawProduct, currency: string | null): Record<string, unknown> {
   const variants = raw.variants ?? [];
   const attributes = raw.attributes ?? [];
   const base = {
     id: raw.id,
     name: localized(raw.name),
     url: raw.canonical_url ?? null,
+    ...(currency ? { currency } : {}),
   };
 
   // 1 sola variante → aplanar precio/stock al top-level (caso producto simple).
@@ -97,8 +98,8 @@ function shapeProduct(raw: RawProduct): Record<string, unknown> {
   };
 }
 
-function shapeProducts(items: unknown[]): Record<string, unknown>[] {
-  return items.map((it) => shapeProduct(it as RawProduct));
+function shapeProducts(items: unknown[], currency: string | null): Record<string, unknown>[] {
+  return items.map((it) => shapeProduct(it as RawProduct, currency));
 }
 
 export async function tiendanubeRoutes(app: FastifyInstance): Promise<void> {
@@ -150,14 +151,14 @@ export async function tiendanubeRoutes(app: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       try {
-        const { payload, cached, fetched_at } = await tiendanubeService.getCachedResource(
-          request.query.client_id,
-          'products',
-        );
-        // Compactar (saca imágenes, expone precio/stock de variants) y luego filtrar.
-        const shaped = shapeProducts(payload);
+        const [{ payload, cached, fetched_at }, currency] = await Promise.all([
+          tiendanubeService.getCachedResource(request.query.client_id, 'products'),
+          tiendanubeService.getCurrency(request.query.client_id),
+        ]);
+        // Compactar (saca imágenes, expone precio/stock/moneda de variants) y luego filtrar.
+        const shaped = shapeProducts(payload, currency);
         const items = filterByQuery(shaped, request.query.query);
-        return { items, count: items.length, cached, fetched_at };
+        return { items, count: items.length, cached, fetched_at, currency };
       } catch (e) {
         return reply.status(404).send({ error: (e as Error).message });
       }

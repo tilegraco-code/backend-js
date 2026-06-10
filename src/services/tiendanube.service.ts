@@ -31,6 +31,16 @@ function pickStoreName(store: TiendanubeStore): string | null {
   return name.es ?? name.pt ?? Object.values(name)[0] ?? null;
 }
 
+/** Moneda principal de la tienda (los precios vienen en esta moneda). */
+function pickCurrency(store: TiendanubeStore): string | null {
+  return store.main_currency ?? store.currency ?? null;
+}
+
+// Caché en memoria de la moneda por cliente. La moneda casi nunca cambia, así que
+// evitamos pegarle a GET /store en cada request. Backend long-running (Fastify): OK.
+const currencyCache = new Map<number, { currency: string | null; ts: number }>();
+const CURRENCY_TTL_MS = 24 * 60 * 60_000; // 24h
+
 const FETCHERS: Record<
   TiendanubeResource,
   (storeId: number, token: string) => Promise<unknown[]>
@@ -87,6 +97,30 @@ export const tiendanubeService = {
       name: pickStoreName(store),
       url: store.url_with_protocol ?? store.original_domain ?? null,
     };
+  },
+
+  /**
+   * Moneda principal de la tienda (ej "ARS"). Cacheada en memoria 24h; se
+   * resuelve con un GET /store la primera vez. Devuelve null si no hay conexión
+   * o si TiendaNube no la informa.
+   */
+  async getCurrency(clientId: number): Promise<string | null> {
+    const hit = currencyCache.get(clientId);
+    if (hit && Date.now() - hit.ts < CURRENCY_TTL_MS) return hit.currency;
+
+    const conn = await this.getConnection(clientId);
+    if (!conn) return null;
+
+    let currency: string | null = null;
+    try {
+      const store = await tiendanubeApiService.fetchStore(conn.store_id, conn.access_token);
+      currency = pickCurrency(store);
+    } catch {
+      currency = null;
+    }
+
+    currencyCache.set(clientId, { currency, ts: Date.now() });
+    return currency;
   },
 
   /**

@@ -30,6 +30,8 @@ export type TiendanubeStore = {
   name?: Record<string, string> | string;
   url_with_protocol?: string;
   original_domain?: string;
+  main_currency?: string; // ISO, ej "ARS" — moneda de los precios
+  currency?: string; // fallback según versión del payload
   [key: string]: unknown;
 };
 
