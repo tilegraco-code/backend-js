@@ -19,6 +19,88 @@ function filterByStatus(items: unknown[], status?: string): unknown[] {
   );
 }
 
+// ---- Shaping de productos ----
+// En TiendaNube el precio/stock viven en cada variant. Devolvemos una forma
+// compacta (sin imágenes ni ruido) que expone lo que el agente necesita.
+
+type I18n = string | Record<string, string> | null | undefined;
+
+function localized(v: I18n): string | null {
+  if (v == null) return null;
+  if (typeof v === 'string') return v;
+  return v.es ?? v.pt ?? Object.values(v)[0] ?? null;
+}
+
+type RawVariant = {
+  price?: string | null;
+  promotional_price?: string | null;
+  stock?: number | null;
+  stock_management?: boolean;
+  values?: I18n[];
+};
+
+type RawProduct = {
+  id?: number;
+  name?: I18n;
+  canonical_url?: string | null;
+  attributes?: I18n[];
+  variants?: RawVariant[];
+};
+
+function variantStock(v: RawVariant): number | string {
+  // stock_management === false → sin control de stock = ilimitado.
+  if (v.stock_management === false) return 'ilimitado';
+  return v.stock ?? 0;
+}
+
+function variantOptions(attributes: I18n[], v: RawVariant): string[] {
+  const values = v.values ?? [];
+  return values
+    .map((val, i) => {
+      const label = localized(attributes[i]);
+      const value = localized(val);
+      if (!value) return null;
+      return label ? `${label}: ${value}` : value;
+    })
+    .filter((x): x is string => Boolean(x));
+}
+
+function shapeProduct(raw: RawProduct): Record<string, unknown> {
+  const variants = raw.variants ?? [];
+  const attributes = raw.attributes ?? [];
+  const base = {
+    id: raw.id,
+    name: localized(raw.name),
+    url: raw.canonical_url ?? null,
+  };
+
+  // 1 sola variante → aplanar precio/stock al top-level (caso producto simple).
+  if (variants.length <= 1) {
+    const v = variants[0] ?? {};
+    return {
+      ...base,
+      price: v.price ?? null,
+      promotional_price: v.promotional_price ?? null,
+      stock: variantStock(v),
+    };
+  }
+
+  // Multi-variante → listar cada variante con sus opciones.
+  return {
+    ...base,
+    variants: variants.map((v) => ({
+      options: variantOptions(attributes, v),
+      price: v.price ?? null,
+      promotional_price: v.promotional_price ?? null,
+      stock: variantStock(v),
+    })),
+  };
+}
+
+function shapeProducts(items: unknown[]): Record<string, unknown>[] {
+  return items.map((it) => shapeProduct(it as RawProduct));
+}
+
 export async function tiendanubeRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
 
@@ -72,7 +154,9 @@ export async function tiendanubeRoutes(app: FastifyInstance): Promise<void> {
           request.query.client_id,
           'products',
         );
-        const items = filterByQuery(payload, request.query.query);
+        // Compactar (saca imágenes, expone precio/stock de variants) y luego filtrar.
+        const shaped = shapeProducts(payload);
+        const items = filterByQuery(shaped, request.query.query);
         return { items, count: items.length, cached, fetched_at };
       } catch (e) {
         return reply.status(404).send({ error: (e as Error).message });

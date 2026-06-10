@@ -113,7 +113,13 @@ export const tiendanubeApiService = {
 
   async fetchProducts(storeId: number, token: string): Promise<unknown[]> {
     // Snapshot: primera página amplia. La caché evita pegarle más de 1x/hora.
-    return this.requestList(storeId, token, '/products?per_page=200&published=true');
+    // `fields` (sparse fieldsets) excluye imágenes y demás ruido → caché liviano.
+    // Precio/promo/stock viven dentro de variants; attributes da los nombres de opción.
+    return this.requestList(
+      storeId,
+      token,
+      '/products?per_page=200&published=true&fields=id,name,canonical_url,attributes,variants',
+    );
   },
 
   async fetchOrders(storeId: number, token: string): Promise<unknown[]> {
