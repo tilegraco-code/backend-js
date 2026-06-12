@@ -32,6 +32,7 @@ function localized(v: I18n): string | null {
 }
 
 type RawVariant = {
+  id?: number;
   price?: string | null;
   promotional_price?: string | null;
   stock?: number | null;
@@ -76,10 +77,12 @@ function shapeProduct(raw: RawProduct, currency: string | null): Record<string, 
   };
 
   // 1 sola variante → aplanar precio/stock al top-level (caso producto simple).
+  // variant_id es lo que se usa para armar un checkout (create_checkout).
   if (variants.length <= 1) {
     const v = variants[0] ?? {};
     return {
       ...base,
+      variant_id: v.id ?? null,
       price: v.price ?? null,
       promotional_price: v.promotional_price ?? null,
       stock: variantStock(v),
@@ -90,6 +93,7 @@ function shapeProduct(raw: RawProduct, currency: string | null): Record<string, 
   return {
     ...base,
     variants: variants.map((v) => ({
+      variant_id: v.id ?? null,
       options: variantOptions(attributes, v),
       price: v.price ?? null,
       promotional_price: v.promotional_price ?? null,
@@ -190,6 +194,59 @@ export async function tiendanubeRoutes(app: FastifyInstance): Promise<void> {
         return { items, count: items.length, cached, fetched_at };
       } catch (e) {
         return reply.status(404).send({ error: (e as Error).message });
+      }
+    },
+  );
+
+  // POST /api/tiendanube/checkout — crea un draft order y devuelve checkout_url.
+  r.post(
+    '/checkout',
+    {
+      schema: {
+        tags: ['tiendanube'],
+        summary: 'Crea un carrito listo para pagar (draft order) y devuelve el checkout_url',
+        security: [{ InternalToken: [] }],
+        body: z.object({
+          client_id: z.coerce.number().int().positive(),
+          name: z.string().min(1),
+          lastname: z.string().optional(),
+          email: z.string().email(),
+          phone: z.string().optional(),
+          products: z
+            .array(
+              z.object({
+                variant_id: z.coerce.number().int().positive(),
+                quantity: z.coerce.number().int().positive(),
+              }),
+            )
+            .min(1),
+          note: z.string().optional(),
+        }),
+        response: {
+          200: z.object({
+            checkout_url: z.string().nullable(),
+            draft_order_id: z.number(),
+            total: z.string().nullable(),
+            currency: z.string().nullable(),
+          }),
+          400: errorResponseSchema,
+          500: errorResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const result = await tiendanubeService.createCheckout(request.body.client_id, {
+          name: request.body.name,
+          lastname: request.body.lastname,
+          email: request.body.email,
+          phone: request.body.phone,
+          products: request.body.products,
+          note: request.body.note,
+        });
+        return result;
+      } catch (e) {
+        return reply.status(400).send({ error: (e as Error).message });
       }
     },
   );

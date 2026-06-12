@@ -35,6 +35,24 @@ export type TiendanubeStore = {
   [key: string]: unknown;
 };
 
+export type TiendanubeDraftOrderInput = {
+  contact_name: string;
+  contact_lastname: string;
+  contact_email: string;
+  contact_phone?: string;
+  payment_status: 'unpaid' | 'pending_confirmation' | 'paid';
+  products: { variant_id: number; quantity: number }[];
+  note?: string;
+};
+
+export type TiendanubeDraftOrderResponse = {
+  id: number;
+  checkout_url?: string;
+  abandoned_checkout_url?: string;
+  total?: string;
+  [key: string]: unknown;
+};
+
 export const tiendanubeApiService = {
   /** Intercambia el authorization code por un access_token permanente. */
   async exchangeCode(code: string): Promise<TiendanubeTokenResponse> {
@@ -111,6 +129,36 @@ export const tiendanubeApiService = {
 
   async fetchStore(storeId: number, token: string): Promise<TiendanubeStore> {
     return this.request<TiendanubeStore>(storeId, token, '/store');
+  },
+
+  /**
+   * Crea un draft order (carrito armado desde afuera). Devuelve, entre otros,
+   * `checkout_url`: link de checkout listo para pagar que se le pasa al cliente.
+   * Requiere el scope write_orders en la app.
+   */
+  async createDraftOrder(
+    storeId: number,
+    token: string,
+    payload: TiendanubeDraftOrderInput,
+  ): Promise<TiendanubeDraftOrderResponse> {
+    const { userAgent } = getCreds();
+    const url = `${API_BASE}/${storeId}/draft_orders`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authentication: `bearer ${token}`,
+        'User-Agent': userAgent,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Tiendanube POST /draft_orders ${res.status}: ${errText}`);
+    }
+
+    return (await res.json()) as TiendanubeDraftOrderResponse;
   },
 
   async fetchProducts(storeId: number, token: string): Promise<unknown[]> {

@@ -4,6 +4,22 @@
 import { supabase } from '../lib/supabase';
 import { tiendanubeApiService, TiendanubeStore } from './tiendanube-api.service';
 
+export type CreateCheckoutInput = {
+  name: string;
+  lastname?: string;
+  email: string;
+  phone?: string;
+  products: { variant_id: number; quantity: number }[];
+  note?: string;
+};
+
+export type CreateCheckoutResult = {
+  checkout_url: string | null;
+  draft_order_id: number;
+  total: string | null;
+  currency: string | null;
+};
+
 export type TiendanubeResource = 'products' | 'orders' | 'carts';
 
 export type TiendanubeConnection = {
@@ -121,6 +137,43 @@ export const tiendanubeService = {
 
     currencyCache.set(clientId, { currency, ts: Date.now() });
     return currency;
+  },
+
+  /**
+   * Crea un draft order en la tienda del cliente y devuelve el checkout_url
+   * listo para pagar. El cliente coordina envío y descuentos en el checkout.
+   */
+  async createCheckout(
+    clientId: number,
+    input: CreateCheckoutInput,
+  ): Promise<CreateCheckoutResult> {
+    const conn = await this.getConnection(clientId);
+    if (!conn) {
+      throw new Error('Este workspace no tiene TiendaNube conectado');
+    }
+    if (!input.products?.length) {
+      throw new Error('Se requiere al menos un producto (variant_id + quantity)');
+    }
+
+    const draft = await tiendanubeApiService.createDraftOrder(conn.store_id, conn.access_token, {
+      contact_name: input.name,
+      contact_lastname: input.lastname || '-', // TiendaNube lo exige; placeholder si no hay
+      contact_email: input.email,
+      ...(input.phone ? { contact_phone: input.phone } : {}),
+      payment_status: 'unpaid',
+      products: input.products.map((p) => ({
+        variant_id: p.variant_id,
+        quantity: p.quantity,
+      })),
+      ...(input.note ? { note: input.note } : {}),
+    });
+
+    return {
+      checkout_url: draft.checkout_url ?? null,
+      draft_order_id: draft.id,
+      total: draft.total ?? null,
+      currency: await this.getCurrency(clientId),
+    };
   },
 
   /**
