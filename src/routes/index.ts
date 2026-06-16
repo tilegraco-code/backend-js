@@ -18,6 +18,11 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // internalTokenAuth del scope /api de más abajo (los hooks son encapsulados).
   await app.register(webhookRoutes, { prefix: '/api/webhooks' });
 
+  // Compatibilidad: algunos webhooks de Unipile están configurados en su panel
+  // con la URL sin el prefijo /api (p.ej. /webhooks/unipile/:clientId). Para no
+  // perder eventos los aceptamos también bajo /webhooks. Mismo plugin, mismo auth.
+  await app.register(webhookRoutes, { prefix: '/webhooks' });
+
   // OAuth de TiendaNube: público (lo pega el navegador / TiendaNube). La seguridad
   // la da el `state` firmado, no el internalTokenAuth. Por eso va fuera del scope /api.
   await app.register(tiendanubeOauthRoutes, { prefix: '/api/tiendanube' });
