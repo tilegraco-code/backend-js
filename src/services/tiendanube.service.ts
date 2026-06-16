@@ -17,6 +17,9 @@ export type CreateCheckoutResult = {
   checkout_url: string | null;
   draft_order_id: number;
   total: string | null;
+  discount: string | null;
+  discount_coupon: string | null;
+  discount_gateway: string | null;
   currency: string | null;
 };
 
@@ -172,6 +175,9 @@ export const tiendanubeService = {
       checkout_url: draft.checkout_url ?? null,
       draft_order_id: draft.id,
       total: draft.total ?? null,
+      discount: draft.discount ?? null,
+      discount_coupon: draft.discount_coupon ?? null,
+      discount_gateway: draft.discount_gateway ?? null,
       currency: await this.getCurrency(clientId),
     };
   },

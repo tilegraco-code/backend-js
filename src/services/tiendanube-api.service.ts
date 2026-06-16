@@ -50,6 +50,9 @@ export type TiendanubeDraftOrderResponse = {
   checkout_url?: string;
   abandoned_checkout_url?: string;
   total?: string;
+  discount?: string;
+  discount_coupon?: string;
+  discount_gateway?: string;
   [key: string]: unknown;
 };
 
