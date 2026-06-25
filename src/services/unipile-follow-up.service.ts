@@ -75,6 +75,29 @@ export const unipileFollowUpService = {
     }));
   },
 
+  /**
+   * Reactiva el seguimiento de un chat poniendo `follow_up_sent_at` en null.
+   * No fuerza el envío: el chat queda elegible para el próximo cron siempre que
+   * vuelva a cumplir las condiciones (open, +24h inactivo, workflow habilitado).
+   * Devuelve `true` si encontró y actualizó la fila.
+   */
+  async resetFollowUp(chatId: string, log: FastifyBaseLogger): Promise<boolean> {
+    const { data, error } = await supabase
+      .from('unipile_chats')
+      .update({ follow_up_sent_at: null, updated_at: new Date().toISOString() })
+      .eq('chat_id', chatId)
+      .select('id');
+
+    if (error) {
+      log.error({ err: error, chat_id: chatId }, 'resetFollowUp error');
+      throw error;
+    }
+
+    const found = (data?.length ?? 0) > 0;
+    log.info({ chat_id: chatId, found }, 'follow-up reactivado');
+    return found;
+  },
+
   async runForChat(candidate: FollowUpCandidate, log: FastifyBaseLogger): Promise<void> {
     const chatLog = log.child({ chat_id: candidate.chat_id, client_id: candidate.client_id });
 

@@ -17,6 +17,15 @@ const runResponseSchema = z.object({
   dryRun: z.boolean(),
 });
 
+const resetBodySchema = z.object({
+  chatId: z.string().min(1),
+});
+
+const resetResponseSchema = z.object({
+  ok: z.boolean(),
+  found: z.boolean(),
+});
+
 export async function adminFollowUpRoute(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
 
@@ -40,6 +49,28 @@ export async function adminFollowUpRoute(app: FastifyInstance): Promise<void> {
       const { limit } = request.query;
       const result = await unipileFollowUpService.runBatch(request.log, { limit });
       return { ...result, dryRun: process.env.FOLLOW_UP_DRY_RUN === 'true' };
+    },
+  );
+
+  r.post(
+    '/follow-up/reset',
+    {
+      schema: {
+        tags: ['admin'],
+        summary: 'Reactivar el seguimiento de un chat',
+        description:
+          'Pone `follow_up_sent_at` en null para que el chat vuelva a ser candidato del cron. ' +
+          'No fuerza el envío: respeta las condiciones (open, +24h inactivo, workflow habilitado). ' +
+          '`found` es false si no existe un chat con ese chat_id.',
+        security: [{ InternalToken: [] }],
+        body: resetBodySchema,
+        response: { 200: resetResponseSchema },
+      },
+    },
+    async (request) => {
+      const { chatId } = request.body;
+      const found = await unipileFollowUpService.resetFollowUp(chatId, request.log);
+      return { ok: true, found };
     },
   );
 }
