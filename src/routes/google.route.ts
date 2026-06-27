@@ -20,6 +20,15 @@ function handleError(reply: FastifyReply, e: unknown): FastifyReply {
       error: 'La cuenta de Google se desconectó. Reconectala desde el dashboard.',
     });
   }
+  // Errores 4xx de la API de Google (rango/tab inválido, sin permiso, no existe):
+  // devolver el status real, NO 502. Con 5xx el proxy reemplaza el body y se pierde
+  // el mensaje; con 4xx el detalle llega al dashboard/agente y se puede autocorregir.
+  const ge = e as { code?: unknown; status?: unknown; response?: { status?: unknown } };
+  const raw = ge.response?.status ?? ge.status ?? ge.code;
+  const gcode = typeof raw === 'number' ? raw : Number(raw);
+  if (Number.isFinite(gcode) && gcode >= 400 && gcode < 500) {
+    return reply.status(gcode).send({ error: msg });
+  }
   return reply.status(502).send({ error: msg });
 }
 
@@ -180,6 +189,34 @@ export async function googleRoutes(app: FastifyInstance): Promise<void> {
       try {
         const { client_id, title } = request.body;
         return await googleSheetsService.create(client_id, title);
+      } catch (e) {
+        return handleError(reply, e);
+      }
+    },
+  );
+
+  // GET /api/google/sheets/tabs?client_id=&spreadsheet_id= → nombres de las pestañas.
+  r.get(
+    '/sheets/tabs',
+    {
+      schema: {
+        tags: ['google'],
+        summary: 'Lista los nombres de las pestañas de un Google Sheet',
+        security: [{ InternalToken: [] }],
+        querystring: z.object({
+          client_id: z.coerce.number().int().positive(),
+          spreadsheet_id: z.string().min(1),
+        }),
+        response: { 200: z.unknown(), 409: errorResponseSchema, 502: errorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const tabs = await googleSheetsService.listTabs(
+          request.query.client_id,
+          request.query.spreadsheet_id,
+        );
+        return { tabs };
       } catch (e) {
         return handleError(reply, e);
       }

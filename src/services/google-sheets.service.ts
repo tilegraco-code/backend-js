@@ -106,6 +106,18 @@ export const googleSheetsService = {
     };
   },
 
+  /** Lista los nombres de las pestañas (tabs) de un spreadsheet. */
+  async listTabs(clientId: number, spreadsheetId: string): Promise<string[]> {
+    const sheets = await sheetsClient(clientId);
+    const res = await sheets.spreadsheets.get({
+      spreadsheetId: extractSpreadsheetId(spreadsheetId),
+      fields: 'sheets.properties.title',
+    });
+    return (res.data.sheets ?? [])
+      .map((s) => s.properties?.title ?? '')
+      .filter((t) => t.length > 0);
+  },
+
   /**
    * Busca spreadsheets por nombre vía Drive. Con scope drive.file solo devuelve los
    * que la app creó/abrió.
