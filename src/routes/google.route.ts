@@ -186,26 +186,22 @@ export async function googleRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // GET /api/google/drive/sheets?client_id=&query= → lista Sheets del Drive (picker).
+  // GET /api/google/access-token?client_id= → token corto para el Google Picker (browser).
   r.get(
-    '/drive/sheets',
+    '/access-token',
     {
       schema: {
         tags: ['google'],
-        summary: 'Lista los Google Sheets del Drive del cliente (con filtro opcional)',
+        summary: 'Access token vigente para el Google Picker (uso en el navegador)',
         security: [{ InternalToken: [] }],
-        querystring: z.object({
-          client_id: z.coerce.number().int().positive(),
-          query: z.string().optional(),
-        }),
+        querystring: z.object({ client_id: z.coerce.number().int().positive() }),
         response: { 200: z.unknown(), 409: errorResponseSchema, 502: errorResponseSchema },
       },
     },
     async (request, reply) => {
       try {
-        const { client_id, query } = request.query;
-        const files = await googleSheetsService.listSheets(client_id, query);
-        return { files, count: files.length };
+        const { token, expiry_date } = await googleApiService.accessToken(request.query.client_id);
+        return { access_token: token, expiry_date };
       } catch (e) {
         return handleError(reply, e);
       }

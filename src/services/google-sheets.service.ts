@@ -107,35 +107,6 @@ export const googleSheetsService = {
   },
 
   /**
-   * Lista spreadsheets del Drive del cliente (los más recientes), con filtro opcional
-   * por nombre. Requiere scope drive.readonly. Alimenta el picker del dashboard.
-   */
-  async listSheets(
-    clientId: number,
-    query?: string,
-  ): Promise<{ id: string; name: string; url: string | null }[]> {
-    const drive = await driveClient(clientId);
-    const clauses = [
-      "mimeType='application/vnd.google-apps.spreadsheet'",
-      'trashed=false',
-    ];
-    if (query && query.trim()) {
-      clauses.push(`name contains '${query.replace(/'/g, "\\'")}'`);
-    }
-    const res = await drive.files.list({
-      q: clauses.join(' and '),
-      fields: 'files(id,name,webViewLink)',
-      orderBy: 'modifiedTime desc',
-      pageSize: 25,
-    });
-    return (res.data.files ?? []).map((f) => ({
-      id: f.id ?? '',
-      name: f.name ?? '',
-      url: f.webViewLink ?? null,
-    }));
-  },
-
-  /**
    * Busca spreadsheets por nombre vía Drive. Con scope drive.file solo devuelve los
    * que la app creó/abrió.
    */

@@ -9,10 +9,9 @@ import { googleService } from './google.service';
 export const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets',
   'https://www.googleapis.com/auth/calendar.events',
-  // drive.readonly: necesario para LISTAR/buscar los archivos del Drive del cliente
-  // (el picker de Sheets en el dashboard). Es un scope "restringido" → producción
-  // requiere verificación CASA de Google; en modo Testing funciona con test users.
-  'https://www.googleapis.com/auth/drive.readonly',
+  // drive.file: acceso solo a los archivos que el usuario elige vía Google Picker.
+  // Es scope "sensitive" (NO restricted) → no requiere CASA, solo verificación estándar.
+  // La discovery de archivos la hace el Picker en el browser, no nosotros.
   'https://www.googleapis.com/auth/drive.file',
   'openid',
   'email',
@@ -100,6 +99,17 @@ export const googleApiService = {
     });
 
     return client;
+  },
+
+  /**
+   * Devuelve un access_token vigente (refresca si hace falta) para que el Google
+   * Picker corra en el navegador. Token de vida corta (~1h). Lanza GoogleNotConnectedError.
+   */
+  async accessToken(clientId: number): Promise<{ token: string; expiry_date: number | null }> {
+    const client = await this.authorizedClient(clientId);
+    const { token } = await client.getAccessToken();
+    if (!token) throw new Error('No se pudo obtener un access token de Google');
+    return { token, expiry_date: client.credentials.expiry_date ?? null };
   },
 
   /** Revoca el token en Google (best-effort, para desconectar). */
