@@ -7,6 +7,8 @@ import { adminFollowUpRoute } from './admin/follow-up.route';
 import { adminAccountLifecycleRoute } from './admin/account-lifecycle.route';
 import { tiendanubeOauthRoutes } from './tiendanube-oauth.route';
 import { tiendanubeRoutes } from './tiendanube.route';
+import { googleOauthRoutes } from './google-oauth.route';
+import { googleRoutes } from './google.route';
 import { internalTokenAuth } from '../middlewares/auth.middleware';
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
@@ -27,6 +29,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // la da el `state` firmado, no el internalTokenAuth. Por eso va fuera del scope /api.
   await app.register(tiendanubeOauthRoutes, { prefix: '/api/tiendanube' });
 
+  // OAuth de Google: público (lo pega el navegador / Google). Misma lógica que
+  // TiendaNube: la seguridad la da el `state` firmado, por eso va fuera del scope /api.
+  await app.register(googleOauthRoutes, { prefix: '/api/google' });
+
   await app.register(
     async (api) => {
       api.addHook('onRequest', internalTokenAuth);
@@ -35,6 +41,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await api.register(adminFollowUpRoute, { prefix: '/admin' });
       await api.register(adminAccountLifecycleRoute, { prefix: '/admin' });
       await api.register(tiendanubeRoutes, { prefix: '/tiendanube' });
+      await api.register(googleRoutes, { prefix: '/google' });
     },
     { prefix: '/api' },
   );
