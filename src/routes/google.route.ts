@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { googleApiService, GoogleNotConnectedError } from '../services/google-api.service';
 import { googleService } from '../services/google.service';
 import { googleSheetsService } from '../services/google-sheets.service';
+import { googleCalendarService } from '../services/google-calendar.service';
 
 const errorResponseSchema = z.object({ error: z.string() });
 
@@ -265,6 +266,157 @@ export async function googleRoutes(app: FastifyInstance): Promise<void> {
         const { client_id, name } = request.query;
         const files = await googleSheetsService.findByName(client_id, name);
         return { files, count: files.length };
+      } catch (e) {
+        return handleError(reply, e);
+      }
+    },
+  );
+
+  // ---------- CALENDAR ----------
+
+  const calIdSchema = z.string().min(1).default('primary');
+
+  // GET /api/google/calendar/events?client_id=&calendar_id=&time_min=&time_max=
+  r.get(
+    '/calendar/events',
+    {
+      schema: {
+        tags: ['google'],
+        summary: 'Lista eventos del calendario en un rango',
+        security: [{ InternalToken: [] }],
+        querystring: z.object({
+          client_id: z.coerce.number().int().positive(),
+          calendar_id: calIdSchema,
+          time_min: z.string().min(1),
+          time_max: z.string().min(1),
+        }),
+        response: { 200: z.unknown(), 409: errorResponseSchema, 502: errorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const { client_id, calendar_id, time_min, time_max } = request.query;
+        const events = await googleCalendarService.listEvents(client_id, calendar_id, time_min, time_max);
+        return { events, count: events.length };
+      } catch (e) {
+        return handleError(reply, e);
+      }
+    },
+  );
+
+  // GET /api/google/calendar/availability?client_id=&calendar_id=&time_min=&time_max=
+  r.get(
+    '/calendar/availability',
+    {
+      schema: {
+        tags: ['google'],
+        summary: 'Disponibilidad (bloques ocupados) en un rango',
+        security: [{ InternalToken: [] }],
+        querystring: z.object({
+          client_id: z.coerce.number().int().positive(),
+          calendar_id: calIdSchema,
+          time_min: z.string().min(1),
+          time_max: z.string().min(1),
+        }),
+        response: { 200: z.unknown(), 409: errorResponseSchema, 502: errorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const { client_id, calendar_id, time_min, time_max } = request.query;
+        return await googleCalendarService.checkAvailability(client_id, calendar_id, time_min, time_max);
+      } catch (e) {
+        return handleError(reply, e);
+      }
+    },
+  );
+
+  // POST /api/google/calendar/events
+  r.post(
+    '/calendar/events',
+    {
+      schema: {
+        tags: ['google'],
+        summary: 'Crea un evento en el calendario',
+        security: [{ InternalToken: [] }],
+        body: z.object({
+          client_id: z.coerce.number().int().positive(),
+          calendar_id: calIdSchema,
+          summary: z.string().min(1),
+          description: z.string().optional(),
+          location: z.string().optional(),
+          start: z.string().min(1),
+          end: z.string().min(1),
+          timezone: z.string().optional(),
+          attendees: z.array(z.string().email()).optional(),
+        }),
+        response: { 200: z.unknown(), 409: errorResponseSchema, 502: errorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const { client_id, calendar_id, ...input } = request.body;
+        return await googleCalendarService.createEvent(client_id, calendar_id, input);
+      } catch (e) {
+        return handleError(reply, e);
+      }
+    },
+  );
+
+  // PATCH /api/google/calendar/events/:id
+  r.patch(
+    '/calendar/events/:id',
+    {
+      schema: {
+        tags: ['google'],
+        summary: 'Edita un evento existente',
+        security: [{ InternalToken: [] }],
+        params: z.object({ id: z.string().min(1) }),
+        body: z.object({
+          client_id: z.coerce.number().int().positive(),
+          calendar_id: calIdSchema,
+          summary: z.string().optional(),
+          description: z.string().optional(),
+          location: z.string().optional(),
+          start: z.string().optional(),
+          end: z.string().optional(),
+          timezone: z.string().optional(),
+          attendees: z.array(z.string().email()).optional(),
+        }),
+        response: { 200: z.unknown(), 409: errorResponseSchema, 502: errorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const { client_id, calendar_id, ...input } = request.body;
+        return await googleCalendarService.updateEvent(client_id, calendar_id, request.params.id, input);
+      } catch (e) {
+        return handleError(reply, e);
+      }
+    },
+  );
+
+  // DELETE /api/google/calendar/events/:id?client_id=&calendar_id=
+  r.delete(
+    '/calendar/events/:id',
+    {
+      schema: {
+        tags: ['google'],
+        summary: 'Cancela (borra) un evento',
+        security: [{ InternalToken: [] }],
+        params: z.object({ id: z.string().min(1) }),
+        querystring: z.object({
+          client_id: z.coerce.number().int().positive(),
+          calendar_id: calIdSchema,
+        }),
+        response: { 200: z.object({ ok: z.boolean() }), 409: errorResponseSchema, 502: errorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const { client_id, calendar_id } = request.query;
+        await googleCalendarService.deleteEvent(client_id, calendar_id, request.params.id);
+        return { ok: true };
       } catch (e) {
         return handleError(reply, e);
       }
