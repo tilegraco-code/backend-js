@@ -44,6 +44,12 @@ Todo lo de (A), más:
 - [ ] `src/routes/<x>.route.ts` → endpoints `/api/<x>/*`. Registrar en el scope autenticado.
 - [ ] Env nuevas en `.env` y `.env.example` (`<X>_OAUTH_CLIENT_ID`, etc.).
 
+### Base de datos (si el `type` de la tool es nuevo)
+- [ ] La columna `agent_tools.type` tiene un CHECK constraint con la lista de tipos
+  permitidos. Un tipo nuevo (ej. `google_calendar`) **falla el INSERT con 500** hasta
+  que se agrega. Migración: `drop constraint agent_tools_type_check` + recrearlo con
+  el tipo nuevo en el array. (También actualizar el whitelist en `app/api/tools/[id]/route.ts`.)
+
 ### Dashboard
 - [ ] `lib/<x>.ts` → `getConnection(clientId)`.
 - [ ] `app/api/auth/<x>/{connect,status,disconnect}/route.ts` (reutilizar `signState`).

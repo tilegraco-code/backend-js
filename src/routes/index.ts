@@ -5,6 +5,7 @@ import { webhookRoutes } from './webhooks';
 import { messagesRoute } from './messages.route';
 import { adminFollowUpRoute } from './admin/follow-up.route';
 import { adminAccountLifecycleRoute } from './admin/account-lifecycle.route';
+import { adminUsageBillingRoute } from './admin/usage-billing.route';
 import { tiendanubeOauthRoutes } from './tiendanube-oauth.route';
 import { tiendanubeRoutes } from './tiendanube.route';
 import { googleOauthRoutes } from './google-oauth.route';
@@ -40,6 +41,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await api.register(messagesRoute, { prefix: '/messages' });
       await api.register(adminFollowUpRoute, { prefix: '/admin' });
       await api.register(adminAccountLifecycleRoute, { prefix: '/admin' });
+      await api.register(adminUsageBillingRoute, { prefix: '/admin' });
       await api.register(tiendanubeRoutes, { prefix: '/tiendanube' });
       await api.register(googleRoutes, { prefix: '/google' });
     },
