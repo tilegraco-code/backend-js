@@ -49,6 +49,22 @@ async function getOrCreateAuthConfig(toolkit: string): Promise<string> {
   return created.id;
 }
 
+export type ConnectedToolkit = { slug: string; name: string; logo: string | null };
+
+// Cache en proceso del catálogo de toolkits (slug → nombre/logo) para enriquecer las
+// conexiones sin re-pegarle a Composio en cada request. Se repuebla al reiniciar.
+let _toolkitMeta: Map<string, { name: string; logo: string | null }> | null = null;
+async function toolkitMetaMap(): Promise<Map<string, { name: string; logo: string | null }>> {
+  if (_toolkitMeta) return _toolkitMeta;
+  const list = await client().toolkits.get();
+  const m = new Map<string, { name: string; logo: string | null }>();
+  for (const t of list) {
+    m.set(t.slug.toLowerCase(), { name: t.name, logo: t.meta?.logo ?? null });
+  }
+  _toolkitMeta = m;
+  return m;
+}
+
 // Metadata "liviana" de una tool para la UI / el snapshot que guardamos en config.
 export type ComposioToolMeta = {
   slug: string;
@@ -113,8 +129,12 @@ export const composioService = {
     return { redirectUrl: req.redirectUrl ?? null, connectionId: req.id };
   },
 
-  /** Slugs de toolkits con una cuenta ACTIVE para el cliente (para marcar el catálogo). */
-  async listConnectedToolkits(clientId: number): Promise<string[]> {
+  /**
+   * Toolkits con una cuenta ACTIVE para el cliente, con nombre + logo (para el catálogo
+   * y la lista del árbol). La cuenta conectada solo trae el slug → cruzamos con el
+   * catálogo de toolkits (cacheado en proceso) para el nombre/logo.
+   */
+  async listConnectedToolkits(clientId: number): Promise<ConnectedToolkit[]> {
     const res = await client().connectedAccounts.list({
       userIds: [uid(clientId)],
       statuses: ['ACTIVE'],
@@ -124,7 +144,12 @@ export const composioService = {
       const slug = typeof acc.toolkit === 'string' ? acc.toolkit : acc.toolkit?.slug;
       if (slug) slugs.add(slug.toLowerCase());
     }
-    return [...slugs];
+    const meta = await toolkitMetaMap();
+    return [...slugs].map((slug) => ({
+      slug,
+      name: meta.get(slug)?.name ?? slug,
+      logo: meta.get(slug)?.logo ?? null,
+    }));
   },
 
   /** ¿El cliente tiene una cuenta ACTIVE para el toolkit? */

@@ -143,7 +143,19 @@ Registrar en `src/routes/index.ts` dentro del bloque con `internalTokenAuth` (co
   - **Conexión → página Integraciones** (`app/dashboard/integrations/`): card **"Gmail"** (Composio oculto al usuario). Connect = POST `/api/auth/composio/connect` → popup hosted + poll de `status`; disconnect. Estado server-side vía `lib/composio.ts getConnectionStatus` → backend. (Decisión UX: card por servicio real, no marca "Composio".)
   - **Selección de tool → tab Tareas / árbol**: `ToolConnections` += `composio` (calculado en `app/dashboard/workflows/[id]/page.tsx`); `TaskWheelDialog` muestra un tile "Gmail" (gated por conexión) que devuelve `toolType:"composio"` sin acción fija; `tareas-tab` intercepta eso y abre `composio-tool-dialog.tsx` (buscador **search-first** de tools de Gmail) → crea la `agent_tool` (`config {toolkit,slug,inputSchema}`) → reusa `onToolSaved` (activa + crea nodo + sync n8n).
   - Proxy routes: `/api/composio/{toolkits,tools}` + `/api/auth/composio/{status,connect,disconnect}`. Typecheck limpio.
-  - **Pendientes menores:** (a) editar una tool composio desde el árbol (lápiz) abre el `ToolFormDialog` estándar que no conoce `composio` → por ahora borrar/recrear; (b) expandir de Gmail a selector de toolkit (constante `TOOLKIT` en el dialog + una card por servicio en Integraciones); (c) `gmail.png` no existe → la card usa un SVG inline.
+  - **Multi-toolkit (hecho):** el árbol ya no está atado a Gmail. `connections.composio` es `string[]` (slugs conectados, vía `getConnectedToolkits`); el wheel muestra un tile único **"Apps conectadas"** si hay ≥1; el picker (`composio-tool-dialog`) recibe los toolkits conectados, muestra chips para elegir la app y busca acciones dentro de la elegida. Nombres lindos con un mapa `TOOLKIT_LABELS` + capitalize de fallback.
+  - **Pendientes menores:** (a) editar una tool composio desde el árbol (lápiz) abre el `ToolFormDialog` estándar que no conoce `composio` → por ahora borrar/recrear; (b) nombres/logos reales por toolkit en el árbol (hoy `TOOLKIT_LABELS`; se puede enriquecer desde `toolkits.get()`); (c) desconectar en las cards del catálogo.
+
+## Catálogo de apps en Integraciones (sin pre-instanciar nada)
+
+**Pregunta clave: ¿hay que instanciar las 1000+ apps previamente? NO.** El modelo es lazy:
+- El catálogo se llena en vivo con `composio.toolkits.get()` → array con `{ name, slug, meta:{ logo, description } }` (los **logos reales** salen de `meta.logo`). Una sola llamada.
+- Al tocar **Connect** en cualquier app, `getOrCreateAuthConfig(toolkit)` crea el authConfig gestionado de ese toolkit **en ese momento** si no existía, y arranca el `link`. El endpoint `/api/auth/composio/connect` es genérico (cualquier slug).
+- Marcado "Conectado" en toda la grilla con **1 request**: `GET /api/composio/connections` → `connectedAccounts.list({userIds:[clientId], statuses:['ACTIVE']})` → set de slugs conectados.
+
+**Caveats del catálogo completo:** (a) los pocos toolkits sin managed-auth requieren BYO OAuth una vez; (b) toolkits con auth por API key usan un flujo distinto (pegar key, no popup) — el popup actual cubre los OAuth (Gmail, Slack, Notion, Calendar…).
+
+**UI (decisión: nativas aparte + catálogo Composio):** en `app/dashboard/integrations/` se conservan las cards nativas (Cal.com/TiendaNube/Google) y debajo va `components/integrations/composio-catalog.tsx`: sección **"Más usadas"** (curado por slug: gmail, googlecalendar, slack, notion, hubspot, googlesheets…) + **"Todas las apps"** (grilla con logos + buscador; cap de 90 sin búsqueda). Card simplificada = **logo + nombre + Connect/Conectado**. Connect = popup hosted + poll de `/api/composio/connections`.
 
 ## Orden de implementación
 
@@ -164,7 +176,7 @@ Registrar en `src/routes/index.ts` dentro del bloque con `internalTokenAuth` (co
 
 **Riesgos / a validar:**
 - **(a) authConfig por toolkit (confirmado, resuelto en el plan):** `initiate()` exige `authConfigId` y hay uno por toolkit — hay que crearlo una vez (dashboard o `authConfigs.create` por SDK). Es setup por-toolkit (no por-cliente); `getOrCreateAuthConfig` lo absorbe. Confirmar el nombre exacto de `authConfigs.create/list` en el SDK al implementar.
-- **(b) campos anidados (object/array)** en el input schema → confirmar que el modelo los completa bien como string-JSON y el backend los parsea.
+- **(b) RESUELTO — tipos de campo:** el nodo de n8n manda todo como string (incluidos opcionales vacíos), y Composio valida por tipo (ej. `label_ids: ""` → "Input should be a valid list"). `runComposio` (dashboard) coerciona los args con `coerceComposioArgs(config.inputSchema, args)`: parsea array/object, convierte number/boolean, y **descarta opcionales vacíos**. Requiere que la tool tenga `config.inputSchema` (lo guarda el picker al crearla).
 - **(c) toolkits sin OAuth (API key / no-auth)** → el flujo de `connect` asume OAuth; manejar el caso "no requiere conexión".
 - **(d) `callbackUrl` del popup** → definir una página del dashboard que cierre el popup y dispare el re-poll de status.
 

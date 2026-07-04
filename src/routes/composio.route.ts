@@ -102,7 +102,16 @@ export async function composioRoutes(app: FastifyInstance): Promise<void> {
         summary: 'Toolkits con cuenta ACTIVE para un cliente',
         security: [{ InternalToken: [] }],
         querystring: z.object({ client_id: z.coerce.number().int().positive() }),
-        response: { 200: z.object({ toolkits: z.array(z.string()) }), 502: errorResponseSchema },
+        response: {
+          200: z.object({
+            toolkits: z.array(z.object({
+              slug: z.string(),
+              name: z.string(),
+              logo: z.string().nullable(),
+            })),
+          }),
+          502: errorResponseSchema,
+        },
       },
     },
     async (request, reply) => {
