@@ -11,6 +11,7 @@ import { tiendanubeRoutes } from './tiendanube.route';
 import { googleOauthRoutes } from './google-oauth.route';
 import { googleRoutes } from './google.route';
 import { composioRoutes } from './composio.route';
+import { agentsRoute } from './agents.route';
 import { internalTokenAuth } from '../middlewares/auth.middleware';
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
@@ -46,6 +47,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await api.register(tiendanubeRoutes, { prefix: '/tiendanube' });
       await api.register(googleRoutes, { prefix: '/google' });
       await api.register(composioRoutes, { prefix: '/composio' });
+      await api.register(agentsRoute, { prefix: '/agents' });
     },
     { prefix: '/api' },
   );
