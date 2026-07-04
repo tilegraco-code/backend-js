@@ -6,6 +6,7 @@
 // (uno por toolkit, no por cliente). `getOrCreateAuthConfig` lo resuelve la 1ra vez
 // (busca el gestionado existente o lo crea) y lo cachea en memoria del proceso.
 import { Composio } from '@composio/core';
+import { supabase } from '../lib/supabase';
 
 export class ComposioNotConnectedError extends Error {
   constructor(clientId: number, toolkit: string) {
@@ -96,10 +97,15 @@ export const composioService = {
     return await client().toolkits.get();
   },
 
-  /** Tools de un toolkit (schema sin userId). `search` hace búsqueda semántica. */
-  async listTools(toolkit: string, search?: string, limit = 50): Promise<ComposioToolMeta[]> {
+  /**
+   * Tools de un toolkit (schema sin userId). `search` hace búsqueda semántica.
+   * `important: false` → trae TODAS las tools del toolkit, no solo las "importantes"
+   * (por defecto Composio recorta y deja afuera acciones como create_event).
+   */
+  async listTools(toolkit: string, search?: string, limit = 100): Promise<ComposioToolMeta[]> {
     const tools = await client().tools.getRawComposioTools({
       toolkits: [tk(toolkit)],
+      important: false,
       ...(search ? { search } : {}),
       limit,
     });
@@ -174,6 +180,27 @@ export const composioService = {
     });
     for (const acc of (res.items ?? []) as { id?: string }[]) {
       if (acc.id) await client().connectedAccounts.delete(acc.id);
+    }
+  },
+
+  /** Registra un fallo de ejecución (best-effort; no rompe la request). */
+  async logExecutionError(input: {
+    clientId: number;
+    toolkit: string;
+    slug: string;
+    args: Record<string, unknown>;
+    error: string;
+  }): Promise<void> {
+    try {
+      await supabase.from('composio_execution_logs').insert({
+        client_id: input.clientId,
+        toolkit: input.toolkit,
+        slug: input.slug,
+        arguments: input.args,
+        error: input.error,
+      });
+    } catch {
+      // logging best-effort
     }
   },
 

@@ -157,6 +157,16 @@ Registrar en `src/routes/index.ts` dentro del bloque con `internalTokenAuth` (co
 
 **UI (decisión: nativas aparte + catálogo Composio):** en `app/dashboard/integrations/` se conservan las cards nativas (Cal.com/TiendaNube/Google) y debajo va `components/integrations/composio-catalog.tsx`: sección **"Más usadas"** (curado por slug: gmail, googlecalendar, slack, notion, hubspot, googlesheets…) + **"Todas las apps"** (grilla con logos + buscador; cap de 90 sin búsqueda). Card simplificada = **logo + nombre + Connect/Conectado**. Connect = popup hosted + poll de `/api/composio/connections`.
 
+## Flexibilidad del schema + error handler
+
+**Problema:** n8n trata TODO placeholder como **requerido**. Emitir los ~13 campos (muchos opcionales: iCalUID, syncToken, timeZone…) hacía que el modelo no pudiera llenarlos → "Received tool input did not match expected schema ✖ Required → at X".
+
+**Fix (flexibilidad):** `composioPlaceholders` ([dashboard lib/n8n.ts]) ahora emite **solo los requeridos** como campos individuales + un único **`extra_params`** (JSON) donde el modelo mete los opcionales que necesite (la descripción lista los disponibles). `runComposio` parsea `extra_params`, lo mergea al resto y coerciona. Resultado: el modelo llena poco y nada lo obliga a completar campos que no usa. **Requiere RE-SYNC** de las tools composio existentes (los placeholders viven en el nodo de n8n → togglear off/on cada tool las re-sincroniza).
+
+**Error handler:** tabla `composio_execution_logs` (client_id, toolkit, slug, arguments, error, created_at) en el proyecto Dashboard. El backend loguea cada fallo de `/execute` (best-effort) → visibilidad de qué tools rompen y por qué, clave para escalar a muchas apps.
+
+**Tools "importantes":** `listTools` pasa `important: false` para traer TODAS las acciones del toolkit (por defecto Composio recorta y deja afuera cosas como create_event).
+
 ## Orden de implementación
 
 1. **Backend service + `/execute` + `/tools` + `/connect`/`/status`** (núcleo). Probar `/execute` con un slug (ej. `GMAIL_SEND_EMAIL`) y un `client_id` conectado a mano desde la consola de Composio.

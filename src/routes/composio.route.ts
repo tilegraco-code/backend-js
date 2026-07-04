@@ -231,11 +231,19 @@ export async function composioRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     async (request, reply) => {
+      const { client_id, toolkit, slug, arguments: args } = request.body;
       try {
-        const { client_id, toolkit, slug, arguments: args } = request.body;
         const data = await composioService.execute(client_id, toolkit, slug, args);
         return { data };
       } catch (e) {
+        // Error handler: registramos el fallo para tener visibilidad de qué tools rompen.
+        await composioService.logExecutionError({
+          clientId: client_id,
+          toolkit,
+          slug,
+          args,
+          error: (e as Error)?.message ?? String(e),
+        });
         return handleError(reply, e);
       }
     },
