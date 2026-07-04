@@ -93,6 +93,28 @@ export async function composioRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // GET /api/composio/connections?client_id= → slugs de toolkits conectados (para el catálogo).
+  r.get(
+    '/connections',
+    {
+      schema: {
+        tags: ['composio'],
+        summary: 'Toolkits con cuenta ACTIVE para un cliente',
+        security: [{ InternalToken: [] }],
+        querystring: z.object({ client_id: z.coerce.number().int().positive() }),
+        response: { 200: z.object({ toolkits: z.array(z.string()) }), 502: errorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const toolkits = await composioService.listConnectedToolkits(request.query.client_id);
+        return { toolkits };
+      } catch (e) {
+        return handleError(reply, e);
+      }
+    },
+  );
+
   // POST /api/composio/connect → inicia OAuth de un toolkit para un cliente.
   r.post(
     '/connect',

@@ -113,6 +113,20 @@ export const composioService = {
     return { redirectUrl: req.redirectUrl ?? null, connectionId: req.id };
   },
 
+  /** Slugs de toolkits con una cuenta ACTIVE para el cliente (para marcar el catálogo). */
+  async listConnectedToolkits(clientId: number): Promise<string[]> {
+    const res = await client().connectedAccounts.list({
+      userIds: [uid(clientId)],
+      statuses: ['ACTIVE'],
+    });
+    const slugs = new Set<string>();
+    for (const acc of (res.items ?? []) as { toolkit?: { slug?: string } | string }[]) {
+      const slug = typeof acc.toolkit === 'string' ? acc.toolkit : acc.toolkit?.slug;
+      if (slug) slugs.add(slug.toLowerCase());
+    }
+    return [...slugs];
+  },
+
   /** ¿El cliente tiene una cuenta ACTIVE para el toolkit? */
   async connectionStatus(
     clientId: number,
