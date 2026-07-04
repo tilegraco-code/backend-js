@@ -58,18 +58,21 @@ Ejecución (runtime):
 - `.env` / `.env.example`: `COMPOSIO_API_KEY=`.
 
 ### 2. `src/services/composio.service.ts` (nuevo)
-Wrapper del SDK (mismo estilo que `tiendanube-api.service.ts`):
-- `client()` → instancia Composio con `COMPOSIO_API_KEY` (lazy, valida env como `getCreds()`).
-- `listToolkits(): Promise<Toolkit[]>` — para browse en UI.
-- `listTools(toolkit, search?): Promise<ToolMeta[]>` — slugs + descripción + inputSchema.
-- `getTool(slug): Promise<ToolMeta>` — schema de una tool (para guardar en config).
-- `initiateConnection(clientId, toolkit): Promise<{ redirectUrl, connectionId }>` — `userId = String(clientId)`, auth config por defecto del toolkit.
-- `connectionStatus(clientId, toolkit): Promise<{ connected, account? }>` — `connectedAccounts.list({ userIds:[String(clientId)] })`.
-- `disconnect(clientId, toolkit): Promise<void>`.
-- `execute(clientId, slug, args): Promise<unknown>` — `tools.execute(slug, { userId:String(clientId), arguments: args })`.
+Wrapper del SDK `@composio/core` v3 (mismo estilo que `tiendanube-api.service.ts`). **Firmas reales confirmadas en la doc oficial:**
+- `client()` → `new Composio({ apiKey: COMPOSIO_API_KEY })` (lazy, valida env como `getCreds()`).
+- `getOrCreateAuthConfig(toolkit): Promise<string>` — resuelve el `authConfigId` (`"ac_..."`) del toolkit. **`initiate()` lo exige y hay uno por toolkit.** Con credenciales gestionadas: buscar el existente (`authConfigs.list`) o crearlo una vez (`authConfigs.create`, sin togglear "use your own credentials"). Cachear el map `toolkit→authConfigId` (memoria o tabla chica). Es **una vez por toolkit, no por cliente**.
+- `listToolkits()` — para browse en UI.
+- `listTools(toolkit, search?)` — `composio.tools.getRawComposioTools({ toolkits:[toolkit], limit })` (schema **sin** userId).
+- `getTool(slug)` — `composio.tools.getRawComposioToolBySlug(slug)` → guardar su input schema en config.
+- `initiateConnection(clientId, toolkit)` — `composio.connectedAccounts.initiate(String(clientId), authConfigId, { callbackUrl })` → `{ redirectUrl, id }`. `callbackUrl` = página del dashboard que cierra el popup.
+- `connectionStatus(clientId, toolkit)` — `connectedAccounts.list({ userIds:[String(clientId)] })` filtrando por toolkit → `{ connected, account? }`.
+- `disconnect(clientId, toolkit)`.
+- `execute(clientId, slug, args)` — `composio.tools.execute(slug, { userId:String(clientId), arguments: args })` → `{ data }`. Serializar `data` a texto para n8n.
 - `class ComposioNotConnectedError extends Error` (mapea a 409, como `GoogleNotConnectedError`).
 
-> No hay capa DB de tokens. Si más adelante queremos status rápido en UI, cachear, pero MVP consulta Composio directo.
+> No hay capa DB de tokens (Composio es el store; `userId = String(client_id)`). Lo único que puede persistirse es el map `toolkit→authConfigId` si no queremos consultarlo cada vez.
+
+> **Auth gestionada vs BYO:** con credenciales por defecto de Composio el consent dice "Composio" y se comparte cuota — OK para validar. Para producción con muchos clientes la doc recomienda **BYO OAuth** (tu propia app) por toolkit importante (Google sobre todo). Migrable después cambiando el authConfig; no bloquea el MVP.
 
 ### 3. `src/routes/composio.route.ts` (nuevo, scope PROTEGIDO `/api/composio`)
 Registrar en `src/routes/index.ts` dentro del bloque con `internalTokenAuth` (como `googleRoutes`). Zod + el `handleError` 409/4xx/502 de `google.route.ts`:
@@ -132,6 +135,13 @@ Registrar en `src/routes/index.ts` dentro del bloque con `internalTokenAuth` (co
 
 ---
 
+## Estado de implementación
+
+- **Fase 1 (backend): COMPLETA y verificada** end-to-end en localhost (toolkits/tools/connect/status/execute con cuenta real).
+- **Fase 2 (dashboard runtime): COMPLETA.** `definitions.ts` (`composio` + `ComposioConfig`), `runComposio` + branch en `runTool`, `composioPlaceholders` en `n8n.ts`, whitelist en `tools/[id]/route.ts`, entradas `composio` en los 3 mapas de UI por tipo. Typecheck limpio. **Migración `agent_tools_type_check` aplicada en prod** (proyecto Dashboard `mzfcauglytyerkxcqpgp`).
+- **Fase 3 (UI): COMPLETA (piloto Gmail).** Proxy routes `/api/composio/{toolkits,tools}` + `/api/auth/composio/{status,connect,disconnect}`. Card "Composio" en el panel → `composio-tool-dialog.tsx`: flujo **search-first** (buscador de tools scope Gmail) → conectar cuenta (popup hosted + poll de status) → nombre/descripción editable → crear (tool `enabled:false`, se activa con el switch). Typecheck limpio. **Decisiones UX:** búsqueda global de tool + scope Gmail para validar.
+  - **Pendientes menores:** (a) editar una tool composio con el lápiz abre el `ToolFormDialog` estándar que no conoce `composio` (por ahora usar toggle/borrar/recrear); (b) expandir de Gmail a selector de toolkit (el dialog tiene la constante `TOOLKIT`); (c) label de la tool en la lista muestra "Composio" genérico (se puede mostrar el slug).
+
 ## Orden de implementación
 
 1. **Backend service + `/execute` + `/tools` + `/connect`/`/status`** (núcleo). Probar `/execute` con un slug (ej. `GMAIL_SEND_EMAIL`) y un `client_id` conectado a mano desde la consola de Composio.
@@ -149,4 +159,16 @@ Registrar en `src/routes/index.ts` dentro del bloque con `internalTokenAuth` (co
 4. **Ejecución real:** el agente invoca la tool → llega a `/api/tools/run` → `runComposio` → Composio ejecuta con el token del cliente → respuesta vuelve al agente.
 5. Dashboard `npx tsc --noEmit`.
 
-**Riesgos / a validar:** (a) forma exacta del SDK `@composio/core` v3 (nombres de métodos `connectedAccounts.initiate` / `tools.execute`); (b) campos anidados (object/array) en el input schema → confirmar que el modelo los completa bien como string-JSON y el backend los parsea; (c) toolkits sin auth (API key) vs OAuth — el flujo de `connect` asume OAuth, manejar el caso "no requiere conexión".
+**Riesgos / a validar:**
+- **(a) authConfig por toolkit (confirmado, resuelto en el plan):** `initiate()` exige `authConfigId` y hay uno por toolkit — hay que crearlo una vez (dashboard o `authConfigs.create` por SDK). Es setup por-toolkit (no por-cliente); `getOrCreateAuthConfig` lo absorbe. Confirmar el nombre exacto de `authConfigs.create/list` en el SDK al implementar.
+- **(b) campos anidados (object/array)** en el input schema → confirmar que el modelo los completa bien como string-JSON y el backend los parsea.
+- **(c) toolkits sin OAuth (API key / no-auth)** → el flujo de `connect` asume OAuth; manejar el caso "no requiere conexión".
+- **(d) `callbackUrl` del popup** → definir una página del dashboard que cierre el popup y dispare el re-poll de status.
+
+**Firmas SDK v3 verificadas (`@composio/core@0.13.1`, probado en localhost):** `new Composio({apiKey})` · `tools.execute(slug,{userId,arguments})→{data,error,successful}` · `tools.getRawComposioToolBySlug(slug)` / `getRawComposioTools({toolkits,search,limit})` (array, sin userId; el schema viene en `inputParameters`) · `toolkits.get()`→array · `authConfigs.list({toolkit,isComposioManaged})` / `authConfigs.create(toolkit,{type:'use_composio_managed_auth'})` · **`connectedAccounts.link(userId,authConfigId,{callbackUrl})→{redirectUrl,id}`** · `connectedAccounts.list({userIds,toolkitSlugs,statuses})→{items}`.
+
+> **⚠️ Corrección verificada:** para auth GESTIONADA por Composio, `connectedAccounts.initiate()` está **retirado** (error 600 "no longer supported"). Hay que usar **`connectedAccounts.link()`** — misma firma y retorno (`redirectUrl`). El service ya usa `link`.
+
+**Estado (verificado end-to-end en localhost con cuenta real conectada):** `/toolkits`, `/tools`, `/tools/:slug`, `/connect` (getOrCreateAuthConfig gestionado + link → redirectUrl hosted), `/status`, **`/execute`** (GMAIL_FETCH_EMAILS devolvió mails reales) ✅. **Fase 1 (backend) COMPLETA.**
+
+> **Version check (verificado):** la ejecución manual exige versión de toolkit; el service pasa `dangerouslySkipVersionCheck: true` (= "latest"). **TODO producción:** guardar la versión del toolkit en `config` al crear la tool y pasarla en execute, para reproducibilidad.

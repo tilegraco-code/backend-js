@@ -1,0 +1,167 @@
+// Integración con Composio (proveedor de tools multi-tenant).
+// A diferencia de Google/TiendaNube NO guardamos tokens: Composio es el store de las
+// cuentas conectadas. El multi-tenant se mapea con userId = String(client_id).
+//
+// Auth GESTIONADA por Composio (sin BYO OAuth): cada toolkit necesita un authConfig
+// (uno por toolkit, no por cliente). `getOrCreateAuthConfig` lo resuelve la 1ra vez
+// (busca el gestionado existente o lo crea) y lo cachea en memoria del proceso.
+import { Composio } from '@composio/core';
+
+export class ComposioNotConnectedError extends Error {
+  constructor(clientId: number, toolkit: string) {
+    super(`El cliente ${clientId} no tiene "${toolkit}" conectado en Composio`);
+    this.name = 'ComposioNotConnectedError';
+  }
+}
+
+// Cliente lazy: valida env recién al primer uso (como getCreds() de google-api).
+let _client: Composio | null = null;
+function client(): Composio {
+  if (_client) return _client;
+  const apiKey = process.env.COMPOSIO_API_KEY;
+  if (!apiKey) throw new Error('Falta COMPOSIO_API_KEY en el entorno');
+  _client = new Composio({ apiKey });
+  return _client;
+}
+
+const uid = (clientId: number): string => String(clientId);
+const tk = (toolkit: string): string => toolkit.toLowerCase();
+
+// toolkit → authConfigId (gestionado). Cache de proceso; se repuebla al reiniciar.
+const authConfigCache = new Map<string, string>();
+
+async function getOrCreateAuthConfig(toolkit: string): Promise<string> {
+  const key = tk(toolkit);
+  const cached = authConfigCache.get(key);
+  if (cached) return cached;
+
+  // 1) Reusar un authConfig gestionado ya existente para el toolkit.
+  const existing = await client().authConfigs.list({ toolkit: key, isComposioManaged: true, limit: 1 });
+  const found = existing.items?.[0]?.id;
+  if (found) {
+    authConfigCache.set(key, found);
+    return found;
+  }
+
+  // 2) Crear uno gestionado (sin credenciales propias → consent muestra "Composio").
+  const created = await client().authConfigs.create(key, { type: 'use_composio_managed_auth' });
+  authConfigCache.set(key, created.id);
+  return created.id;
+}
+
+// Metadata "liviana" de una tool para la UI / el snapshot que guardamos en config.
+export type ComposioToolMeta = {
+  slug: string;
+  name: string;
+  description: string | null;
+  toolkit: string | null;
+  inputSchema: Record<string, unknown> | null; // JSON Schema (inputParameters)
+};
+
+function toMeta(tool: {
+  slug: string;
+  name: string;
+  description?: string;
+  toolkit?: { slug?: string } | null;
+  inputParameters?: Record<string, unknown>;
+}): ComposioToolMeta {
+  return {
+    slug: tool.slug,
+    name: tool.name,
+    description: tool.description ?? null,
+    toolkit: tool.toolkit?.slug ?? null,
+    inputSchema: tool.inputParameters ?? null,
+  };
+}
+
+export const composioService = {
+  /** Toolkits disponibles (para el browse en la UI). Devuelve un array. */
+  async listToolkits() {
+    return await client().toolkits.get();
+  },
+
+  /** Tools de un toolkit (schema sin userId). `search` hace búsqueda semántica. */
+  async listTools(toolkit: string, search?: string, limit = 50): Promise<ComposioToolMeta[]> {
+    const tools = await client().tools.getRawComposioTools({
+      toolkits: [tk(toolkit)],
+      ...(search ? { search } : {}),
+      limit,
+    });
+    return tools.map(toMeta);
+  },
+
+  /** Una tool por slug → se guarda su inputSchema en config al crear la agent_tool. */
+  async getTool(slug: string): Promise<ComposioToolMeta> {
+    const tool = await client().tools.getRawComposioToolBySlug(slug);
+    return toMeta(tool);
+  },
+
+  /**
+   * Inicia la conexión OAuth de un toolkit para un cliente. Devuelve la redirectUrl
+   * (página hosted de Composio) que el dashboard abre en popup.
+   */
+  async initiateConnection(
+    clientId: number,
+    toolkit: string,
+    callbackUrl?: string,
+  ): Promise<{ redirectUrl: string | null; connectionId: string }> {
+    const authConfigId = await getOrCreateAuthConfig(toolkit);
+    // `link` (no `initiate`): initiate quedó retirado para auth GESTIONADA por Composio.
+    const req = await client().connectedAccounts.link(uid(clientId), authConfigId, {
+      ...(callbackUrl ? { callbackUrl } : {}),
+    });
+    return { redirectUrl: req.redirectUrl ?? null, connectionId: req.id };
+  },
+
+  /** ¿El cliente tiene una cuenta ACTIVE para el toolkit? */
+  async connectionStatus(
+    clientId: number,
+    toolkit: string,
+  ): Promise<{ connected: boolean; accountId: string | null }> {
+    const res = await client().connectedAccounts.list({
+      userIds: [uid(clientId)],
+      toolkitSlugs: [tk(toolkit)],
+      statuses: ['ACTIVE'],
+    });
+    const account = res.items?.[0] as { id?: string } | undefined;
+    return { connected: Boolean(account), accountId: account?.id ?? null };
+  },
+
+  /** Desconecta (borra) todas las cuentas del cliente para el toolkit. */
+  async disconnect(clientId: number, toolkit: string): Promise<void> {
+    const res = await client().connectedAccounts.list({
+      userIds: [uid(clientId)],
+      toolkitSlugs: [tk(toolkit)],
+    });
+    for (const acc of (res.items ?? []) as { id?: string }[]) {
+      if (acc.id) await client().connectedAccounts.delete(acc.id);
+    }
+  },
+
+  /**
+   * Ejecuta una tool para un cliente. Lanza ComposioNotConnectedError si no hay cuenta
+   * conectada, o Error con el detalle si Composio devuelve `successful: false`.
+   */
+  async execute(
+    clientId: number,
+    toolkit: string,
+    slug: string,
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const { connected } = await this.connectionStatus(clientId, toolkit);
+    if (!connected) throw new ComposioNotConnectedError(clientId, toolkit);
+
+    const res = await client().tools.execute(slug, {
+      userId: uid(clientId),
+      arguments: args,
+      // Ejecuta la versión "latest" del toolkit. Para un proveedor genérico sobre
+      // 1000+ toolkits no pinneamos versión por tool (TODO producción: guardar la
+      // versión en config al crear la tool y pasarla acá para reproducibilidad).
+      dangerouslySkipVersionCheck: true,
+    });
+    if (!res.successful) {
+      throw new Error(res.error ?? `Falló la ejecución de ${slug}`);
+    }
+    return res.data;
+  },
+};
