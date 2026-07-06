@@ -50,6 +50,31 @@ async function getOrCreateAuthConfig(toolkit: string): Promise<string> {
   return created.id;
 }
 
+// ── MCP (nuevo flujo agentic) ────────────────────────────────────────────────
+// Un único server MCP global (lista de toolkits soportados) + URLs por cliente
+// (user_id = client_id → scopeadas a las cuentas conectadas de ese cliente).
+const MCP_SERVER_NAME = 'tilegra-mcp';
+const MCP_TOOLKITS = ['gmail', 'googlecalendar', 'googlesheets', 'googledrive', 'slack', 'notion'];
+
+let _mcpServerId: string | null = null;
+async function getMcpServerId(): Promise<string> {
+  if (_mcpServerId) return _mcpServerId;
+  // Reusar el server por nombre si ya existe (idempotente entre reinicios).
+  const existing = await client().mcp.list({ name: MCP_SERVER_NAME, limit: 1, toolkits: [], page: 1, authConfigs: [] });
+  const found = existing.items?.[0]?.id;
+  if (found) {
+    _mcpServerId = found;
+    return found;
+  }
+  const toolkits: { toolkit: string; authConfigId: string }[] = [];
+  for (const tkSlug of MCP_TOOLKITS) {
+    toolkits.push({ toolkit: tkSlug, authConfigId: await getOrCreateAuthConfig(tkSlug) });
+  }
+  const server = await client().mcp.create(MCP_SERVER_NAME, { toolkits });
+  _mcpServerId = server.id;
+  return server.id;
+}
+
 export type ConnectedToolkit = { slug: string; name: string; logo: string | null };
 
 // Cache en proceso del catálogo de toolkits (slug → nombre/logo) para enriquecer las
@@ -156,6 +181,28 @@ export const composioService = {
       name: meta.get(slug)?.name ?? slug,
       logo: meta.get(slug)?.logo ?? null,
     }));
+  },
+
+  /**
+   * URL del MCP scopeada a un cliente (nuevo flujo agentic). El agente de n8n se
+   * conecta acá y ve/ejecuta las tools de las apps conectadas del cliente.
+   * Devuelve la URL (streamable_http) + la api key que va en el header `x-api-key`.
+   */
+  async getUserMcpUrl(clientId: number): Promise<{ url: string; apiKey: string }> {
+    const serverId = await getMcpServerId();
+    const instance = await client().mcp.generate(uid(clientId), serverId);
+    // La URL `/v3.1/mcp/<id>?...` redirige (a nivel app) a `/v3/mcp/<id>/mcp?...` — que es
+    // el endpoint MCP real. Devolvemos la forma final para no depender de que n8n siga el
+    // redirect. Si el formato no matchea, dejamos la URL tal cual.
+    let url = instance.url;
+    try {
+      const u = new URL(instance.url);
+      if (/^\/v3\.1\/mcp\/[^/]+$/.test(u.pathname)) {
+        u.pathname = u.pathname.replace('/v3.1/mcp/', '/v3/mcp/') + '/mcp';
+        url = u.toString();
+      }
+    } catch { /* url rara → tal cual */ }
+    return { url, apiKey: process.env.COMPOSIO_API_KEY ?? '' };
   },
 
   /** ¿El cliente tiene una cuenta ACTIVE para el toolkit? */

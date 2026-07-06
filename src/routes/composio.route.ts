@@ -124,6 +124,31 @@ export async function composioRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // GET /api/composio/mcp-url?client_id= → URL del MCP scopeada al cliente (para n8n).
+  r.get(
+    '/mcp-url',
+    {
+      schema: {
+        tags: ['composio'],
+        summary: 'URL MCP del cliente + api key para el header x-api-key',
+        security: [{ InternalToken: [] }],
+        querystring: z.object({ client_id: z.coerce.number().int().positive() }),
+        response: {
+          200: z.object({ url: z.string(), api_key: z.string() }),
+          502: errorResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const { url, apiKey } = await composioService.getUserMcpUrl(request.query.client_id);
+        return { url, api_key: apiKey };
+      } catch (e) {
+        return handleError(reply, e);
+      }
+    },
+  );
+
   // POST /api/composio/connect → inicia OAuth de un toolkit para un cliente.
   r.post(
     '/connect',
