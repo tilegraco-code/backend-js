@@ -20,7 +20,9 @@ const MCP_GUIDANCE =
   'Tenés acceso a las apps que el cliente conectó (Gmail, Google Sheets, Google Calendar, etc.).\n' +
   '- Para hacer una acción, PRIMERO buscá la herramienta correcta con COMPOSIO_SEARCH_TOOLS y usá el slug EXACTO que devuelve. NUNCA inventes slugs ni campos.\n' +
   '- Si necesitás el detalle de los parámetros, usá COMPOSIO_GET_TOOL_SCHEMAS antes de ejecutar.\n' +
-  '- Ejecutá con COMPOSIO_MULTI_EXECUTE_TOOL usando los argumentos tal cual el schema.\n' +
+  '- Ejecutá con COMPOSIO_MULTI_EXECUTE_TOOL. Cada elemento del array `tools` debe tener ' +
+  'ÚNICAMENTE `tool_slug` y `arguments`. NO agregues ningún otro campo (ni `thought`, ni ' +
+  'notas, ni comentarios) — rompe la validación.\n' +
   '- Si una app no está conectada, pedile al usuario que la conecte; no inventes datos ni sigas.';
 
 const TRANSFER_BLOCK =

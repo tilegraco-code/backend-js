@@ -124,7 +124,8 @@ export async function composioRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // GET /api/composio/mcp-url?client_id= → URL del MCP scopeada al cliente (para n8n).
+  // GET /api/composio/mcp-url?client_id=&agent_id= → URL del MCP scopeada al cliente (para
+  // n8n). Con `agent_id`, se limita a la allow-list de apps del agente (`mcp_toolkits`).
   r.get(
     '/mcp-url',
     {
@@ -132,7 +133,10 @@ export async function composioRoutes(app: FastifyInstance): Promise<void> {
         tags: ['composio'],
         summary: 'URL MCP del cliente + api key para el header x-api-key',
         security: [{ InternalToken: [] }],
-        querystring: z.object({ client_id: z.coerce.number().int().positive() }),
+        querystring: z.object({
+          client_id: z.coerce.number().int().positive(),
+          agent_id: z.coerce.number().int().positive().optional(),
+        }),
         response: {
           200: z.object({ url: z.string(), api_key: z.string() }),
           502: errorResponseSchema,
@@ -141,7 +145,14 @@ export async function composioRoutes(app: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       try {
-        const { url, apiKey } = await composioService.getUserMcpUrl(request.query.client_id);
+        const allowedTools =
+          request.query.agent_id !== undefined
+            ? await composioService.getAgentMcpTools(request.query.agent_id)
+            : undefined;
+        const { url, apiKey } = await composioService.getUserMcpUrl(
+          request.query.client_id,
+          allowedTools,
+        );
         return { url, api_key: apiKey };
       } catch (e) {
         return handleError(reply, e);

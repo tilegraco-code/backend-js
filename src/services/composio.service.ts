@@ -169,8 +169,18 @@ export const composioService = {
    * URL del MCP scopeada a un cliente (nuevo flujo agentic). El agente de n8n se
    * conecta acá y ve/ejecuta las tools de las apps conectadas del cliente.
    * Devuelve la URL (streamable_http) + la api key que va en el header `x-api-key`.
+   *
+   * `allowedTools` = allow-list del agente (`agentprops.mcp_toolkits`, mapa
+   * `{ toolkit: [tool_slug,...] }`). Si se pasa, el agente solo ve ESAS tools de las apps
+   * conectadas (el Tool Router se scopea con el param `tools`). Si el mapa queda vacío
+   * (no eligió ninguna, o la app no está conectada) devolvemos `{ url:'', apiKey:'' }` →
+   * el agente queda SIN MCP (menos tools = menos tokens). Si es `undefined` (compat con
+   * llamadas viejas) caemos al comportamiento anterior: todas las apps activas del cliente.
    */
-  async getUserMcpUrl(clientId: number): Promise<{ url: string; apiKey: string }> {
+  async getUserMcpUrl(
+    clientId: number,
+    allowedTools?: Record<string, string[]>,
+  ): Promise<{ url: string; apiKey: string }> {
     // Pinneamos el authConfig de CADA toolkit al de la conexión ACTIVE real del usuario.
     // Sin esto, la session agarra otro authConfig y no "ve" la conexión ("no active
     // connection in this session"), aunque exista.
@@ -191,22 +201,62 @@ export const composioService = {
         connected.add(slug);
       }
     }
-    // Habilitamos SOLO las apps con conexión ACTIVE del cliente → el agente no ve tools
-    // de apps dropped/expiradas ni de las que nunca conectó (menos ruido, menos tokens,
-    // menos ambigüedad). Si no tiene ninguna activa, caemos a la lista soportada para que
-    // la session sea válida y pueda guiarlo a conectar.
-    const toolkits = connected.size > 0 ? [...connected] : MCP_TOOLKITS;
+
+    // Allow-list del agente ∩ apps conectadas. Sin allow-list (undefined) → todas las
+    // conectadas (comportamiento previo). Con allow-list → solo las tools elegidas.
+    let toolkits: string[];
+    let toolsParam: Record<string, string[]> | undefined;
+    if (allowedTools === undefined) {
+      toolkits = connected.size > 0 ? [...connected] : MCP_TOOLKITS;
+    } else {
+      // Solo apps conectadas que tengan ≥1 tool elegida.
+      const entries = Object.entries(allowedTools)
+        .map(([tk, slugs]) => [tk.toLowerCase(), (slugs ?? []).filter(Boolean)] as const)
+        .filter(([tk, slugs]) => connected.has(tk) && slugs.length > 0);
+      // El agente no habilitó ninguna tool (o su app no está conectada) → sin MCP.
+      if (entries.length === 0) return { url: '', apiKey: '' };
+      toolkits = entries.map(([tk]) => tk);
+      toolsParam = {};
+      for (const [tk, slugs] of entries) toolsParam[tk] = slugs;
+      // Filtramos authConfigs a las apps elegidas para no arrastrar cuentas ajenas.
+      for (const slug of Object.keys(authConfigs)) {
+        if (!toolkits.includes(slug)) delete authConfigs[slug];
+      }
+    }
 
     // sandbox:false → saca las tools de code-execution y el campo required
     // `sync_response_to_workbench` de MULTI_EXECUTE (que hacía fallar la validación de n8n).
+    // `tools` (mapa toolkit→slugs) restringe el Tool Router a esas tools puntuales.
     const session = await client().create(uid(clientId), {
       mcp: true,
       toolkits,
+      ...(toolsParam ? { tools: toolsParam } : {}),
       authConfigs,
       sandbox: { enable: false },
     });
     const headers = (session.mcp?.headers ?? {}) as Record<string, string>;
     return { url: session.mcp?.url ?? '', apiKey: headers['x-api-key'] ?? '' };
+  },
+
+  /**
+   * Allow-list de tools de un agente: mapa `{ toolkit: [tool_slug,...] }` guardado en
+   * `agentprops.mcp_toolkits` (jsonb). `{}` si no seleccionó ninguna. Tolera el formato
+   * viejo (array) tratándolo como vacío.
+   */
+  async getAgentMcpTools(agentId: number): Promise<Record<string, string[]>> {
+    const { data, error } = await supabase
+      .from('agentprops')
+      .select('mcp_toolkits')
+      .eq('agent_id', agentId)
+      .maybeSingle();
+    if (error) throw error;
+    const raw = data?.mcp_toolkits as unknown;
+    if (!raw || Array.isArray(raw) || typeof raw !== 'object') return {};
+    const out: Record<string, string[]> = {};
+    for (const [tk, slugs] of Object.entries(raw as Record<string, unknown>)) {
+      if (Array.isArray(slugs) && slugs.length) out[tk.toLowerCase()] = slugs.map(String);
+    }
+    return out;
   },
 
   /** ¿El cliente tiene una cuenta ACTIVE para el toolkit? */
