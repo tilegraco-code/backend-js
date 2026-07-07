@@ -191,9 +191,11 @@ export const composioService = {
         connected.add(slug);
       }
     }
-    // Habilitamos los toolkits soportados + los que el cliente conectó (ej. instagram).
-    // Los authConfigs override solo pueden referenciar toolkits habilitados.
-    const toolkits = [...new Set([...MCP_TOOLKITS, ...connected])];
+    // Habilitamos SOLO las apps con conexión ACTIVE del cliente → el agente no ve tools
+    // de apps dropped/expiradas ni de las que nunca conectó (menos ruido, menos tokens,
+    // menos ambigüedad). Si no tiene ninguna activa, caemos a la lista soportada para que
+    // la session sea válida y pueda guiarlo a conectar.
+    const toolkits = connected.size > 0 ? [...connected] : MCP_TOOLKITS;
 
     // sandbox:false → saca las tools de code-execution y el campo required
     // `sync_response_to_workbench` de MULTI_EXECUTE (que hacía fallar la validación de n8n).
