@@ -14,6 +14,15 @@ type TaskRow = {
 type EdgeRow = { source_key: string; target_key: string };
 type ToolRow = { id: number; name: string; description: string | null; enabled: boolean };
 
+// Guía para usar las apps del cliente vía el Tool Router de Composio (MCP). Clave:
+// el agente NO debe inventar slugs — tiene que buscarlos primero.
+const MCP_GUIDANCE =
+  'Tenés acceso a las apps que el cliente conectó (Gmail, Google Sheets, Google Calendar, etc.).\n' +
+  '- Para hacer una acción, PRIMERO buscá la herramienta correcta con COMPOSIO_SEARCH_TOOLS y usá el slug EXACTO que devuelve. NUNCA inventes slugs ni campos.\n' +
+  '- Si necesitás el detalle de los parámetros, usá COMPOSIO_GET_TOOL_SCHEMAS antes de ejecutar.\n' +
+  '- Ejecutá con COMPOSIO_MULTI_EXECUTE_TOOL usando los argumentos tal cual el schema.\n' +
+  '- Si una app no está conectada, pedile al usuario que la conecte; no inventes datos ni sigas.';
+
 const TRANSFER_BLOCK =
   'Si no sabes una respuesta podes hacerle preguntas al usuario, en el caso de aun asi ' +
   'no poder responder usa la tool "transferir_conversacion" para relevarle la conversacion a un humano';
@@ -109,6 +118,8 @@ export const agentSystemMessageService = {
       tareas,
       '# Herramientas',
       herramientas,
+      '# Apps conectadas (Composio)',
+      MCP_GUIDANCE,
       '# Contexto',
       asText(props.contexto),
       '# Estilo',

@@ -51,29 +51,11 @@ async function getOrCreateAuthConfig(toolkit: string): Promise<string> {
 }
 
 // ── MCP (nuevo flujo agentic) ────────────────────────────────────────────────
-// Un único server MCP global (lista de toolkits soportados) + URLs por cliente
-// (user_id = client_id → scopeadas a las cuentas conectadas de ese cliente).
-const MCP_SERVER_NAME = 'tilegra-mcp';
+// Usamos el Tool Router (session): expone ~6 meta-tools (buscar + ejecutar) en vez de
+// las 150+ tools individuales → no revienta el límite de 128 tools de OpenAI, y el
+// agente busca dinámicamente la tool que necesita. userId = client_id → scopeado a las
+// cuentas conectadas del cliente.
 const MCP_TOOLKITS = ['gmail', 'googlecalendar', 'googlesheets', 'googledrive', 'slack', 'notion'];
-
-let _mcpServerId: string | null = null;
-async function getMcpServerId(): Promise<string> {
-  if (_mcpServerId) return _mcpServerId;
-  // Reusar el server por nombre si ya existe (idempotente entre reinicios).
-  const existing = await client().mcp.list({ name: MCP_SERVER_NAME, limit: 1, toolkits: [], page: 1, authConfigs: [] });
-  const found = existing.items?.[0]?.id;
-  if (found) {
-    _mcpServerId = found;
-    return found;
-  }
-  const toolkits: { toolkit: string; authConfigId: string }[] = [];
-  for (const tkSlug of MCP_TOOLKITS) {
-    toolkits.push({ toolkit: tkSlug, authConfigId: await getOrCreateAuthConfig(tkSlug) });
-  }
-  const server = await client().mcp.create(MCP_SERVER_NAME, { toolkits });
-  _mcpServerId = server.id;
-  return server.id;
-}
 
 export type ConnectedToolkit = { slug: string; name: string; logo: string | null };
 
@@ -189,20 +171,40 @@ export const composioService = {
    * Devuelve la URL (streamable_http) + la api key que va en el header `x-api-key`.
    */
   async getUserMcpUrl(clientId: number): Promise<{ url: string; apiKey: string }> {
-    const serverId = await getMcpServerId();
-    const instance = await client().mcp.generate(uid(clientId), serverId);
-    // La URL `/v3.1/mcp/<id>?...` redirige (a nivel app) a `/v3/mcp/<id>/mcp?...` — que es
-    // el endpoint MCP real. Devolvemos la forma final para no depender de que n8n siga el
-    // redirect. Si el formato no matchea, dejamos la URL tal cual.
-    let url = instance.url;
-    try {
-      const u = new URL(instance.url);
-      if (/^\/v3\.1\/mcp\/[^/]+$/.test(u.pathname)) {
-        u.pathname = u.pathname.replace('/v3.1/mcp/', '/v3/mcp/') + '/mcp';
-        url = u.toString();
+    // Pinneamos el authConfig de CADA toolkit al de la conexión ACTIVE real del usuario.
+    // Sin esto, la session agarra otro authConfig y no "ve" la conexión ("no active
+    // connection in this session"), aunque exista.
+    const accounts = await client().connectedAccounts.list({
+      userIds: [uid(clientId)],
+      statuses: ['ACTIVE'],
+    });
+    const authConfigs: Record<string, string> = {};
+    const connected = new Set<string>();
+    for (const acc of (accounts.items ?? []) as {
+      toolkit?: { slug?: string } | string;
+      authConfig?: { id?: string };
+    }[]) {
+      const slug = (typeof acc.toolkit === 'string' ? acc.toolkit : acc.toolkit?.slug)?.toLowerCase();
+      const acId = acc.authConfig?.id;
+      if (slug && acId) {
+        authConfigs[slug] = acId;
+        connected.add(slug);
       }
-    } catch { /* url rara → tal cual */ }
-    return { url, apiKey: process.env.COMPOSIO_API_KEY ?? '' };
+    }
+    // Habilitamos los toolkits soportados + los que el cliente conectó (ej. instagram).
+    // Los authConfigs override solo pueden referenciar toolkits habilitados.
+    const toolkits = [...new Set([...MCP_TOOLKITS, ...connected])];
+
+    // sandbox:false → saca las tools de code-execution y el campo required
+    // `sync_response_to_workbench` de MULTI_EXECUTE (que hacía fallar la validación de n8n).
+    const session = await client().create(uid(clientId), {
+      mcp: true,
+      toolkits,
+      authConfigs,
+      sandbox: { enable: false },
+    });
+    const headers = (session.mcp?.headers ?? {}) as Record<string, string>;
+    return { url: session.mcp?.url ?? '', apiKey: headers['x-api-key'] ?? '' };
   },
 
   /** ¿El cliente tiene una cuenta ACTIVE para el toolkit? */

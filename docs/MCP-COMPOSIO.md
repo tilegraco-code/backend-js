@@ -96,6 +96,17 @@ Recomendación MVP: **(1) natural language + búsqueda**, y para lo que necesite
 - **Falta validar en n8n:** que el nodo MCP Client siga el 307 y descubra/ejecute; y el scoping (si expone tools de apps no conectadas por el cliente).
 - **Implementado:** `composioService.getUserMcpUrl(clientId)` + `GET /api/composio/mcp-url`.
 
+### ✅ Spike n8n ejecutado — 2 hallazgos y sus fixes
+1. **Transport:** el nodo `@n8n/n8n-nodes-langchain.mcpClientTool` en **typeVersion 1** es SSE-only (hace GET → Composio 405). Hay que usar **tv 1.1** con `serverTransport: "httpStreamable"` y la URL en **`endpointUrl`** (no `sseEndpoint`).
+2. **Límite de 128 tools (OpenAI):** el MCP server estático exponía 156 tools → OpenAI rechaza (>128). **Solución = Tool Router:** `composio.create(clientId, { mcp:true, toolkits })` → session cuyo MCP expone **~6 meta-tools** (`COMPOSIO_SEARCH_TOOLS`, execute, manage connections). El agente **busca** la tool y la ejecuta. Escala a cualquier cantidad de apps.
+   - `session.mcp.url` = `https://backend.composio.dev/tool_router/trs_.../mcp` (estable por `sessionId`, reusable con `sessions.use`).
+   - `session.mcp.headers['x-api-key']` = `ak_...` (key MCP de la org, **la misma para todas las sessions** → credential n8n compartida).
+3. **n8n:** credential `httpHeaderAuth` (`x-api-key` = `ak_...`), compartida (id `rXJrVQFQmTOxfoC9`). Nodo `Composio Apps` (tv 1.1, httpStreamable, `endpointUrl` inyectado por `createWorkflow`) → `ai_tool` → AI Agent. Validado: el tool-router responde el handshake MCP.
+4. **`sync_response_to_workbench` required (fix):** la meta-tool `COMPOSIO_MULTI_EXECUTE_TOOL` traía un campo required de la feature workbench/sandbox que el modelo no completaba → n8n rechazaba. **Solución: crear la session con `sandbox: { enable: false }`** → quedan **4 meta-tools** (search, multi-execute [required solo `tools`], get-schemas, manage-connections), sin code-execution ni el campo workbench.
+5. **"No active connection in this session" (fix):** la session no veía la conexión ACTIVE del cliente porque agarraba un authConfig distinto (hay >1 authConfig gestionado por toolkit). **Solución:** derivar el mapa `authConfigs: { toolkit → authConfigId }` de las **conexiones ACTIVE reales del usuario** (`connectedAccounts.list`) y pasarlo al `create`, habilitando `toolkits = soportados ∪ conectados` (los overrides solo pueden referenciar toolkits habilitados). Verificado: todas las apps del cliente 57 pasan a `connection.isActive: true`.
+6. **El agente inventa slugs (`SPREADSHEET_ADD_ROW`):** `gpt-4o-mini` no seguía el "buscá primero" y alucinaba el slug. **Mitigaciones:** (a) guía en el system message (`# Apps conectadas`: usar `COMPOSIO_SEARCH_TOOLS` y el slug exacto, nunca inventar); (b) **subir el modelo a `gpt-4o`** (mini es muy flojo para el razonamiento search→get-schema→execute).
+   - **A validar aún:** el end-to-end con gpt-4o + guía; y la persistencia de las sessions (si expiran, regenerar la URL baked en n8n).
+
 ---
 
 ## Plan de migración por fases
