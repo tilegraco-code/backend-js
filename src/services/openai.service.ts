@@ -48,4 +48,34 @@ export const openaiService = {
     if (!text) throw new Error('OpenAI devolvió respuesta vacía');
     return text.slice(0, 500);
   },
+
+  /**
+   * Traduce un error técnico (de n8n / una tool) a una explicación breve en español
+   * simple y accionable para el dueño de un negocio sin conocimiento técnico.
+   * gpt-5-mini (razonamiento) → sin `temperature` custom.
+   */
+  async summarizeError(raw: string, context?: string): Promise<string> {
+    const userPrompt =
+      `Error técnico:\n${raw}\n` +
+      (context ? `\nDónde ocurrió: ${context}\n` : '') +
+      `\nExplicá en español rioplatense, en máximo 2 frases, qué pasó y qué habría que ` +
+      `ajustar para que no vuelva a fallar. Sin jerga técnica, sin nombres de variables ` +
+      `internas. Devolvé SOLO la explicación.`;
+
+    const res = await getClient().chat.completions.create({
+      model: 'gpt-5-mini',
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Sos un asistente que le explica a un dueño de negocio SIN conocimiento técnico ' +
+            'por qué falló su agente de IA. Claro, concreto y accionable.',
+        },
+        { role: 'user', content: userPrompt },
+      ],
+    });
+
+    const text = res.choices[0]?.message?.content?.trim() ?? '';
+    return text.slice(0, 600) || 'No se pudo generar un resumen del error.';
+  },
 };

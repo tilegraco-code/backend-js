@@ -4,6 +4,8 @@ import { registerExampleJob } from './example.job';
 import { registerUnipileFollowUpJob } from './unipile-follow-up.job';
 import { registerAccountLifecycleJob } from './account-lifecycle.job';
 import { registerUsageBillingJob } from './usage-billing.job';
+import { registerLearningsJob } from './learnings.job';
+import { registerTokenBackfillJob } from './usage-tokens.job';
 
 let tasks: ScheduledTask[] = [];
 
@@ -18,6 +20,8 @@ export function startJobs(log: FastifyBaseLogger): void {
     registerUnipileFollowUpJob(log),
     registerAccountLifecycleJob(log),
     registerUsageBillingJob(log),
+    registerLearningsJob(log),
+    registerTokenBackfillJob(log),
   ];
   log.info({ count: tasks.length }, 'Cron jobs iniciados');
 }
