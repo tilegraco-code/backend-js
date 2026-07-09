@@ -25,6 +25,13 @@ const MCP_GUIDANCE =
   'notas, ni comentarios) — rompe la validación.\n' +
   '- Si una app no está conectada, pedile al usuario que la conecte; no inventes datos ni sigas.';
 
+// Guía para el flujo LangGraph: las tools están bindeadas DIRECTO (no hay Tool Router / meta-tools).
+// El agente ve y llama las herramientas nativamente, así que la guía es mínima.
+const DIRECT_TOOLS_GUIDANCE =
+  'Tenés herramientas conectadas (Gmail, Google Calendar, etc.). Usalas cuando la tarea lo ' +
+  'pida, llamándolas directamente. Si una app no está conectada o te falta un dato, pediselo ' +
+  'al usuario; no inventes datos ni sigas.';
+
 const TRANSFER_BLOCK =
   'Si no sabes una respuesta podes hacerle preguntas al usuario, en el caso de aun asi ' +
   'no poder responder usa la tool "transferir_conversacion" para relevarle la conversacion a un humano';
@@ -90,16 +97,22 @@ function renderTasks(tasks: TaskRow[], edges: EdgeRow[], toolNameById: Map<numbe
 
 export const agentSystemMessageService = {
   async build(agentId: number): Promise<string> {
-    const [propsRes, tasksRes, edgesRes, toolsRes] = await Promise.all([
+    const [propsRes, tasksRes, edgesRes, toolsRes, agentRes] = await Promise.all([
       supabase.from('agentprops').select('rol, contexto, estilo, limits').eq('agent_id', agentId).maybeSingle(),
       supabase.from('agent_tasks').select('node_key, kind, condition, action, tool_id, sort_order').eq('agent_id', agentId),
       supabase.from('agent_task_edges').select('source_key, target_key').eq('agent_id', agentId),
       supabase.from('agent_tools').select('id, name, description, enabled').eq('agent_id', agentId),
+      supabase.from('agent').select('runtime').eq('agent_id', agentId).maybeSingle(),
     ]);
     if (propsRes.error) throw propsRes.error;
     if (tasksRes.error) throw tasksRes.error;
     if (edgesRes.error) throw edgesRes.error;
     if (toolsRes.error) throw toolsRes.error;
+
+    // El bloque de tools depende del runtime: n8n usa el Tool Router (meta-tools), LangGraph
+    // bindea directo. Con las meta-tools en el prompt de un agente LangGraph, lo confundís.
+    const runtime = (agentRes.data as { runtime?: string } | null)?.runtime ?? 'n8n';
+    const toolsGuidance = runtime === 'langgraph' ? DIRECT_TOOLS_GUIDANCE : MCP_GUIDANCE;
 
     const props = (propsRes.data ?? {}) as { rol?: string; contexto?: string; estilo?: string; limits?: unknown };
     const tasks = (tasksRes.data ?? []) as TaskRow[];
@@ -121,7 +134,7 @@ export const agentSystemMessageService = {
       '# Herramientas',
       herramientas,
       '# Apps conectadas (Composio)',
-      MCP_GUIDANCE,
+      toolsGuidance,
       '# Contexto',
       asText(props.contexto),
       '# Estilo',

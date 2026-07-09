@@ -3,6 +3,7 @@ import { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { agentSystemMessageService } from '../services/agent-system-message.service';
 import { composioService } from '../services/composio.service';
+import { refreshAgentRuntimeCache } from '../services/agent-runtime.service';
 import { supabase } from '../lib/supabase';
 
 const errorResponseSchema = z.object({ error: z.string() });
@@ -84,6 +85,25 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
       } catch (e) {
         return reply.status(502).send({ error: (e as Error)?.message ?? 'Error desconocido' });
       }
+    },
+  );
+
+  // POST /api/agents/:agentId/refresh-runtime → el dashboard avisa que cambió la config del
+  // agente; el backend refresca el cache del runtime si es LangGraph (no-op si es n8n).
+  r.post(
+    '/:agentId/refresh-runtime',
+    {
+      schema: {
+        tags: ['agents'],
+        summary: 'Refresca el cache del runtime del agente al cambiar su config',
+        security: [{ InternalToken: [] }],
+        params: z.object({ agentId: z.coerce.number().int().positive() }),
+        response: { 200: z.object({ ok: z.boolean() }) },
+      },
+    },
+    async (request, reply) => {
+      await refreshAgentRuntimeCache(request.params.agentId, request.log);
+      return reply.send({ ok: true });
     },
   );
 }

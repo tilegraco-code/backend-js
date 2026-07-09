@@ -111,6 +111,37 @@ export async function runViaAgent(
 }
 
 /**
+ * Invalida el cache de config/agente en agente-tilegra cuando cambia la config de un agente
+ * LangGraph (system message, tareas, tools) → los cambios pegan al toque en vez de esperar el
+ * TTL. No-op para agentes n8n (esos leen la config en vivo). Best-effort.
+ * Lo llama el dashboard vía `POST /api/agents/:id/refresh-runtime` (el dashboard no conoce al
+ * runtime; delega en el backend).
+ */
+export async function refreshAgentRuntimeCache(
+  agentId: number,
+  log?: FastifyBaseLogger,
+): Promise<void> {
+  const { data: agent } = await supabase
+    .from('agent')
+    .select('runtime')
+    .eq('agent_id', agentId)
+    .maybeSingle();
+  if ((agent as { runtime?: string } | null)?.runtime !== 'langgraph') return;
+
+  const url = process.env.AGENT_RUNTIME_URL;
+  const internalKey = process.env.INTERNAL_API_KEY ?? '';
+  if (!url) return;
+  try {
+    await fetch(`${url.replace(/\/$/, '')}/agents/${agentId}/refresh`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${internalKey}` },
+    });
+  } catch (e) {
+    log?.error({ err: e, agentId }, 'refresh del runtime falló');
+  }
+}
+
+/**
  * Decide el runtime del agente vinculado al workflow y ejecuta por el camino que corresponda.
  * Reemplaza la llamada directa a `forwardToN8n` en los webhooks.
  */
