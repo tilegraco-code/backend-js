@@ -11,7 +11,7 @@ type InvokeResponse = {
   response?: string | null;
   escalated?: boolean;
   escalation_reason?: string | null;
-  usage?: { input_tokens?: number; output_tokens?: number };
+  usage?: { input_tokens?: number; input_cached_tokens?: number; output_tokens?: number };
   skipped?: boolean;
 };
 
@@ -76,7 +76,9 @@ export async function runViaAgent(
     if (!sent.ok) log.error({ agentId, chatId: payload.chat_id, err: sent.error }, 'envío falló');
   }
 
-  // 3. agentuse — con los tokens INLINE (no necesita el backfill).
+  // 3. agentuse — con los tokens INLINE (no necesita el backfill). Separamos el input
+  // cacheado del no cacheado para que el costo real sea calculable
+  // (input*0.25/M + input_cached*0.025/M + output*2/M).
   const usage = result.usage ?? {};
   const { error: useErr } = await supabase.from('agentuse').insert({
     agent_id: agentId,
@@ -85,6 +87,7 @@ export async function runViaAgent(
     question: payload.question,
     response,
     input_tokens: usage.input_tokens ?? 0,
+    input_cached_tokens: usage.input_cached_tokens ?? 0,
     output_tokens: usage.output_tokens ?? 0,
     tokens_synced: true,
   });
