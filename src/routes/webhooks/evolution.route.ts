@@ -3,6 +3,7 @@ import { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { evolutionWebhookAuth } from '../../middlewares/evolution-webhook-auth.middleware';
 import { evolutionWebhookService } from '../../services/evolution-webhook.service';
+import { dispatchToRuntime } from '../../services/agent-runtime.service';
 
 const okResponseSchema = z
   .object({
@@ -67,12 +68,12 @@ export async function evolutionWebhookRoutes(app: FastifyInstance): Promise<void
           return reply.status(result.status).send({ error: result.error });
         }
 
-        // ACK inmediato; el forward a n8n va en background para no bloquear.
+        // ACK inmediato; la ejecución del agente (n8n o LangGraph) va en background.
         if (result.forward) {
           const { workflowId, payload: n8nPayload } = result.forward;
           const log = request.log;
           setImmediate(() => {
-            evolutionWebhookService.forwardToN8n(n8nPayload, workflowId, log).catch(() => {
+            dispatchToRuntime(n8nPayload, workflowId, 'whatsapp', log).catch(() => {
               /* errores ya logueados dentro */
             });
           });

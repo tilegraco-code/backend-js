@@ -3,6 +3,7 @@ import { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { unipileWebhookAuth } from '../../middlewares/unipile-webhook-auth.middleware';
 import { unipileWebhookService } from '../../services/unipile-webhook.service';
+import { dispatchToRuntime } from '../../services/agent-runtime.service';
 
 const okResponseSchema = z
   .object({
@@ -180,7 +181,7 @@ export async function unipileWebhookRoutes(app: FastifyInstance): Promise<void> 
         const { workflowId, payload } = result.forward;
         const log = request.log;
         setImmediate(() => {
-          unipileWebhookService.forwardToN8n(payload, workflowId, log).catch(() => {
+          dispatchToRuntime(payload, workflowId, 'whatsapp', log).catch(() => {
             /* errores ya logueados dentro */
           });
         });
