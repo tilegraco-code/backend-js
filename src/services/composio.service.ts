@@ -59,12 +59,39 @@ const MCP_TOOLKITS = ['gmail', 'googlecalendar', 'googlesheets', 'googledrive', 
 
 export type ConnectedToolkit = { slug: string; name: string; logo: string | null };
 
+// Cache en proceso del catálogo completo de toolkits. El catálogo de Composio es
+// prácticamente estático, así que lo servimos desde memoria durante TTL_MS y solo
+// re-pegamos cuando vence o al reiniciar el proceso.
+type ToolkitList = Awaited<ReturnType<ReturnType<typeof client>['toolkits']['get']>>;
+const TOOLKITS_TTL_MS = 6 * 60 * 60 * 1000; // 6 h
+let _toolkitList: { data: ToolkitList; at: number } | null = null;
+let _toolkitListPromise: Promise<ToolkitList> | null = null;
+
+async function getToolkitList(): Promise<ToolkitList> {
+  if (_toolkitList && Date.now() - _toolkitList.at < TOOLKITS_TTL_MS) {
+    return _toolkitList.data;
+  }
+  // Coalescer requests concurrentes en una sola llamada a Composio.
+  if (!_toolkitListPromise) {
+    _toolkitListPromise = client()
+      .toolkits.get()
+      .then((data) => {
+        _toolkitList = { data, at: Date.now() };
+        return data;
+      })
+      .finally(() => {
+        _toolkitListPromise = null;
+      });
+  }
+  return _toolkitListPromise;
+}
+
 // Cache en proceso del catálogo de toolkits (slug → nombre/logo) para enriquecer las
-// conexiones sin re-pegarle a Composio en cada request. Se repuebla al reiniciar.
+// conexiones sin re-pegarle a Composio en cada request. Reusa el catálogo cacheado.
 let _toolkitMeta: Map<string, { name: string; logo: string | null }> | null = null;
 async function toolkitMetaMap(): Promise<Map<string, { name: string; logo: string | null }>> {
   if (_toolkitMeta) return _toolkitMeta;
-  const list = await client().toolkits.get();
+  const list = await getToolkitList();
   const m = new Map<string, { name: string; logo: string | null }>();
   for (const t of list) {
     m.set(t.slug.toLowerCase(), { name: t.name, logo: t.meta?.logo ?? null });
@@ -99,9 +126,9 @@ function toMeta(tool: {
 }
 
 export const composioService = {
-  /** Toolkits disponibles (para el browse en la UI). Devuelve un array. */
+  /** Toolkits disponibles (para el browse en la UI). Cacheado en proceso (ver TTL). */
   async listToolkits() {
-    return await client().toolkits.get();
+    return await getToolkitList();
   },
 
   /**

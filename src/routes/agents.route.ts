@@ -51,7 +51,18 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
           200: z.object({
             system_message: z.string(),
             client_id: z.number(),
+            project_id: z.number().nullable(),
+            has_knowledge: z.boolean(),
             tools: z.record(z.string(), z.array(z.string())),
+            // Tools de API propias (ej. TiendaNube) desde agent_tools (habilitadas).
+            api_tools: z.array(
+              z.object({
+                name: z.string(),
+                description: z.string().nullable(),
+                type: z.string().nullable(),
+                config: z.record(z.string(), z.unknown()).nullable(),
+              }),
+            ),
           }),
           502: errorResponseSchema,
         },
@@ -60,28 +71,53 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
     async (request, reply) => {
       try {
         const agentId = request.params.agentId;
-        const [system_message, tools] = await Promise.all([
+        const [system_message, tools, apiToolsRes] = await Promise.all([
           agentSystemMessageService.build(agentId),
           composioService.getAgentMcpTools(agentId),
+          supabase
+            .from('agent_tools')
+            .select('name, description, type, config')
+            .eq('agent_id', agentId)
+            .eq('enabled', true),
         ]);
 
-        // client_id: agent → project → client_id.
+        const api_tools = (apiToolsRes.data ?? []).map((t) => ({
+          name: t.name as string,
+          description: (t.description as string | null) ?? null,
+          type: (t.type as string | null) ?? null,
+          config: (t.config as Record<string, unknown> | null) ?? null,
+        }));
+
+        // client_id: agent → project → client_id. De paso resolvemos el project_id (scope del
+        // RAG) y si el proyecto tiene documentos listos (has_knowledge) para que el runtime
+        // decida si adjunta el tool de búsqueda en la base de conocimiento.
         let client_id = 0;
+        let project_id: number | null = null;
+        let has_knowledge = false;
         const { data: agent } = await supabase
           .from('agent')
           .select('project_id')
           .eq('agent_id', agentId)
           .maybeSingle();
         if (agent?.project_id != null) {
-          const { data: project } = await supabase
-            .from('project')
-            .select('client_id')
-            .eq('project_id', agent.project_id)
-            .maybeSingle();
+          project_id = agent.project_id;
+          const [{ data: project }, { count }] = await Promise.all([
+            supabase
+              .from('project')
+              .select('client_id')
+              .eq('project_id', agent.project_id)
+              .maybeSingle(),
+            supabase
+              .from('documents')
+              .select('id', { count: 'exact', head: true })
+              .eq('project_id', agent.project_id)
+              .eq('status', 'ready'),
+          ]);
           client_id = project?.client_id ?? 0;
+          has_knowledge = (count ?? 0) > 0;
         }
 
-        return { system_message, client_id, tools };
+        return { system_message, client_id, project_id, has_knowledge, tools, api_tools };
       } catch (e) {
         return reply.status(502).send({ error: (e as Error)?.message ?? 'Error desconocido' });
       }
