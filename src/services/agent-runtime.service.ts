@@ -152,7 +152,7 @@ export async function dispatchToRuntime(
   log: FastifyBaseLogger,
 ): Promise<void> {
   const { data: wf } = await supabase
-    .from('n8n_workflow')
+    .from('workflow')
     .select('agent_id, client_id')
     .eq('id', workflowId)
     .single();

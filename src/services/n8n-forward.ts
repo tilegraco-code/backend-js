@@ -15,7 +15,7 @@ export type N8nForwardPayload = {
 /**
  * Forwarder hacia el workflow n8n vinculado. POSTea el envelope normalizado.
  *
- * Solo resuelve `n8n_workflow.webhook_path` por id y hace el POST. La decisión
+ * Solo resuelve `workflow.webhook_path` por id y hace el POST. La decisión
  * de SI forwardear (chat en estado `ia` + workflow asignado) la toma el servicio
  * que llama.
  *
@@ -33,7 +33,7 @@ export async function forwardToN8n(
   }
 
   const { data: workflow, error } = await supabase
-    .from('n8n_workflow')
+    .from('workflow')
     .select('webhook_path')
     .eq('id', workflowId)
     .single();

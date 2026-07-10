@@ -31,7 +31,7 @@ export async function runLearningsIngestion(
   }
 
   const { data: workflows, error } = await supabase
-    .from('n8n_workflow')
+    .from('workflow')
     .select('agent_id, client_id, n8n_id')
     .not('n8n_id', 'is', null);
   if (error) throw error;

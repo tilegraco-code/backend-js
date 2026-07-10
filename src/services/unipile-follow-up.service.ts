@@ -49,14 +49,14 @@ export const unipileFollowUpService = {
       .from('unipile_chats')
       .select(
         `id, chat_id, client_id, account_id, contact_name, workflow_id, provider, last_message_at,
-         n8n_workflow!inner ( follow_up_enabled )`,
+         workflow!inner ( follow_up_enabled )`,
       )
       .eq('status', 'open')
       .is('follow_up_sent_at', null)
       .lt('last_message_at', cutoff)
       .not('last_message_at', 'is', null)
       .not('workflow_id', 'is', null)
-      .eq('n8n_workflow.follow_up_enabled', true)
+      .eq('workflow.follow_up_enabled', true)
       .order('last_message_at', { ascending: false });
 
     if (error) {
