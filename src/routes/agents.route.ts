@@ -3,7 +3,7 @@ import { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { agentSystemMessageService } from '../services/agent-system-message.service';
 import { composioService } from '../services/composio.service';
-import { refreshAgentRuntimeCache } from '../services/agent-runtime.service';
+import { refreshAgentRuntimeCache, dispatchToRuntime } from '../services/agent-runtime.service';
 import { supabase } from '../lib/supabase';
 
 const errorResponseSchema = z.object({ error: z.string() });
@@ -139,6 +139,39 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       await refreshAgentRuntimeCache(request.params.agentId, request.log);
+      return reply.send({ ok: true });
+    },
+  );
+
+  // POST /api/agents/run-turn → dispara un turno del agente para un workflow/chat. Lo usa el
+  // "test agent" del dashboard: en vez de postear al webhook de n8n (que no existe para agentes
+  // LangGraph), delega en el backend, que rutea por runtime igual que un webhook de canal real.
+  // La respuesta la persiste `runViaAgent` vía sendOutgoing (para provider TEST solo persiste) →
+  // el UI del test la lee por Realtime. Fire & forget: no bloqueamos el turno completo.
+  r.post(
+    '/run-turn',
+    {
+      schema: {
+        tags: ['agents'],
+        summary: 'Dispara un turno del agente para un workflow/chat (test del dashboard)',
+        security: [{ InternalToken: [] }],
+        body: z.object({
+          workflow_id: z.coerce.number().int().positive(),
+          chat_id: z.string().min(1),
+          message: z.string().min(1),
+          nombre: z.string().optional(),
+        }),
+        response: { 200: z.object({ ok: z.boolean() }) },
+      },
+    },
+    async (request, reply) => {
+      const { workflow_id, chat_id, message, nombre } = request.body;
+      void dispatchToRuntime(
+        { chat_id, question: message, nombre: nombre ?? 'Test' },
+        workflow_id,
+        'test',
+        request.log,
+      ).catch((e) => request.log.error({ err: e, workflow_id }, 'run-turn: dispatch falló'));
       return reply.send({ ok: true });
     },
   );
