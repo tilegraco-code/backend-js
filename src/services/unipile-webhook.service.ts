@@ -1,5 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import { FastifyBaseLogger } from 'fastify';
 import { supabase } from '../lib/supabase';
+import { getOwnerEmail } from '../lib/owner-email';
+import { sendCapiEvent } from './meta-capi.service';
 import { forwardToN8n, type N8nForwardPayload } from './n8n-forward';
 import type {
   UnipileAccountStatus,
@@ -276,6 +279,24 @@ export const unipileWebhookService = {
     if (updateError) {
       log.error({ err: updateError }, 'account-connected update error');
       return { ok: false, status: 500, error: 'DB error' };
+    }
+
+    // Activación: primer inbox conectado (no reconexión). Evento a Meta CAPI en
+    // background — nunca bloquea ni rompe el callback de hosted auth.
+    if (!isReconnect) {
+      void (async () => {
+        const email = await getOwnerEmail(clientId, log);
+        await sendCapiEvent(
+          {
+            eventName: 'inbox_connected',
+            eventId: randomUUID(),
+            actionSource: 'system_generated',
+            customData: { channel: accountType ?? undefined },
+            user: { email: email ?? undefined, externalId: clientId },
+          },
+          log,
+        );
+      })().catch((err) => log.error({ err, clientId }, 'inbox_connected CAPI falló'));
     }
 
     return { ok: true };

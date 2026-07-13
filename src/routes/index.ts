@@ -12,6 +12,7 @@ import { googleOauthRoutes } from './google-oauth.route';
 import { googleRoutes } from './google.route';
 import { composioRoutes } from './composio.route';
 import { agentsRoute } from './agents.route';
+import { metaCapiRoute } from './meta-capi.route';
 import { internalTokenAuth } from '../middlewares/auth.middleware';
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
@@ -35,6 +36,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // OAuth de Google: público (lo pega el navegador / Google). Misma lógica que
   // TiendaNube: la seguridad la da el `state` firmado, por eso va fuera del scope /api.
   await app.register(googleOauthRoutes, { prefix: '/api/google' });
+
+  // Tracking de Meta CAPI. `/track` es público (lo pega el navegador); `/server-event`
+  // trae su propio internalTokenAuth por-ruta, por eso el plugin va fuera del scope /api.
+  await app.register(metaCapiRoute, { prefix: '/api/tracking' });
 
   await app.register(
     async (api) => {
