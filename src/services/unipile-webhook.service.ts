@@ -56,12 +56,19 @@ export const unipileWebhookService = {
     // Resolver client_id real desde unipile_inboxes.account_id (no del path)
     const { data: inbox } = await supabase
       .from('unipile_inboxes')
-      .select('client_id, workflow_id')
+      .select('client_id, workflow_id, suspended')
       .eq('account_id', account_id)
       .maybeSingle();
 
     if (!inbox) {
       return { ok: false, status: 404, error: 'Unknown account' };
+    }
+
+    // Canal suspendido (trial vencido / plan impago): no se persiste ni se
+    // responde nada, aunque la cuenta siga viva del lado de Unipile.
+    if (inbox.suspended === true) {
+      log.warn({ account_id }, 'unipile: mensaje en inbox suspendido — ignorado');
+      return { ok: true, skipped: 'inbox_suspended' };
     }
 
     const clientId = inbox.client_id;

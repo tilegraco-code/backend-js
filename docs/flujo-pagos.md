@@ -38,7 +38,7 @@ El backend llama al dashboard con `POST {DASHBOARD_URL}/api/billing/sync-preappr
 | `invoice` | `mp_payment_id`, `amount_ars`, `status`, `billing_period`, `description` |
 | `document_billing_items` | `billing_batch`, `page_count`, `free_pages_applied`, `billable_pages`, `amount_ars`, `status` (`pending`/`paid`/`free`) |
 | `usage_billing_items` | `client_id`, `billing_period` (`YYYY-MM`), `included_uses`, `total_uses`, `billable_uses`, `amount_ars`, `status` (`pending`/`paid`/`free`) |
-| `unipile_inboxes` | `client_id`, `provider` (`WHATSAPP`/`INSTAGRAM`/`WEB`/…), `workflow_id`, `suspended` |
+| `unipile_inboxes` | `client_id`, `provider` (`WHATSAPP`/`INSTAGRAM`/`WEB`/…), `workflow_id`, `suspended`, `suspended_reason` (`lifecycle_cut`/`billing_paused`), `suspended_at` |
 | `agentuse` | `agent_id`, `created_at` — 1 fila = 1 uso |
 
 ---
@@ -184,9 +184,34 @@ amount_ars    = billable_uses × 14
 
 `src/services/account-lifecycle.service.ts` + `src/jobs/account-lifecycle.job.ts` (CRON diario `0 13 * * *`).
 
-- **Trials:** avisa a los que vencen dentro de la gracia; tras la gracia desconecta canales (salvo que tengan billing autorizado).
+- **Trials:** avisa a los que vencen dentro de la ventana de aviso; tras la gracia desconecta canales (salvo que tengan billing autorizado).
 - **Planes:** avisa cuando `next_payment_date` está por vencer; tras la gracia sin renovar, desconecta canales y pone `status='paused'`.
-- Config: `ACCOUNT_LIFECYCLE_CRON`, `ACCOUNT_LIFECYCLE_GRACE_HOURS`, `ACCOUNT_LIFECYCLE_DRY_RUN`.
+- Config: `ACCOUNT_LIFECYCLE_CRON`, `ACCOUNT_LIFECYCLE_GRACE_HOURS`, `ACCOUNT_LIFECYCLE_WARNING_HOURS` (default 48, nunca menor a la gracia), `ACCOUNT_LIFECYCLE_DRY_RUN`.
+
+### El corte es soft: suspende, no borra
+
+`disconnectClientChannels()` destruye la cuenta en Unipile / la instancia en Evolution (ahí está el costo, y es irreversible), pero **conserva la fila** de `unipile_inboxes` con `suspended=true`, `suspended_reason='lifecycle_cut'`, `status='inactive'`, `account_status='disconnected'`.
+
+Por qué no se borra:
+- El vínculo agente↔canal vive en `unipile_inboxes.workflow_id`. Borrando la fila el agente queda como si nunca hubiera tenido canal, en vez de "desconectado".
+- `web_snippets` cuelga con `ON DELETE CASCADE`: borrar la fila destruye el `public_key` del widget embebido en el sitio del cliente, que no se recupera pagando. Los inboxes `provider='WEB'` ni siquiera tocan un proveedor externo — sólo se suspenden.
+
+**`suspended` es el kill switch real.** Lo respetan `evolution-webhook.service.ts`, `unipile-webhook.service.ts` y `outgoing-message.service.ts` (402). Antes se escribía desde el webhook de MP y no lo leía nadie: suspender no hacía nada.
+
+**Todo lo que cuenta canales o cupo tiene que excluir `suspended`** — si no, la fila muerta ocupa la única licencia del plan Lite y el cliente que acaba de pagar no puede conectar nada. Ya está aplicado en `checkInboxLimit`, el home, `connectPage`, el detalle de agente y la página de billing.
+
+### Reactivación (`suspended_reason`)
+
+| `suspended_reason` | Quién lo puso | Estado del proveedor | Qué pasa al autorizar |
+|---|---|---|---|
+| `lifecycle_cut` | CRON de backend-js | destruido | WEB se reactiva solo; el resto se borra para reconectar limpio |
+| `billing_paused` | webhook de MP (`paused`/`cancelled`) | intacto | se reactiva tal cual estaba |
+
+Lo resuelve `reactivateSuspendedInboxes()` en `app/api/webhooks/mercadopago/route.ts`. Sin esa distinción, reautorizar borraría canales sanos que sólo estaban pausados por cobro.
+
+### Aviso al cliente
+
+`getOwnerEmail()` ya **no exige `role='owner'`**: ordena owner → admin → resto. Había clientes cuyo único usuario era `member`, y se les cortaba la cuenta sin mandar ningún email. En la app, `AccountCutBanner` (alimentado por `lib/db/getAccountStatus.ts`) muestra el corte en home y en connect con CTA a `/dashboard/billing`.
 
 ---
 
@@ -250,8 +275,10 @@ from usage_billing_items order by created_at desc;
 - `app/api/webhooks/mercadopago/route.ts`
 - `app/api/billing/{subscribe,update-quota,cancel,pause,resume,sync-preapproval}/route.ts`
 - `app/dashboard/plans/plan-calculator.tsx` · `app/dashboard/usage/page.tsx` · `lib/client/usagePage.tsx`
+- `lib/db/getAccountStatus.ts` · `components/account-cut-banner.tsx` · `lib/db/checkPlanLimits.ts`
 
 **backend-js**
 - `src/services/usage-billing.service.ts` · `src/jobs/usage-billing.job.ts` · `src/routes/admin/usage-billing.route.ts`
-- `src/services/account-lifecycle.service.ts` · `src/jobs/account-lifecycle.job.ts`
-- `db/migrations/usage_billing_items.sql`
+- `src/services/account-lifecycle.service.ts` · `src/services/channel-disconnect.service.ts` · `src/jobs/account-lifecycle.job.ts`
+- `src/lib/owner-email.ts` · `src/services/email.service.ts`
+- `db/migrations/usage_billing_items.sql` · `db/migrations/unipile_inboxes_suspended_reason.sql`

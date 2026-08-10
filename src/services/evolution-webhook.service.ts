@@ -44,12 +44,17 @@ function jidToHandle(jid: string | undefined | null): string | null {
 
 // ---------- RESOLUCIÓN DE INBOX ----------
 
-type ResolvedInbox = { id: number; client_id: number; workflow_id: number | null };
+type ResolvedInbox = {
+  id: number;
+  client_id: number;
+  workflow_id: number | null;
+  suspended: boolean | null;
+};
 
 async function resolveInbox(instance: string): Promise<ResolvedInbox | null> {
   const { data } = await supabase
     .from('unipile_inboxes')
-    .select('id, client_id, workflow_id')
+    .select('id, client_id, workflow_id, suspended')
     .eq('evolution_instance_name', instance)
     .eq('source', 'evolution')
     .maybeSingle();
@@ -88,6 +93,13 @@ export const evolutionWebhookService = {
     const inbox = await resolveInbox(instance);
     if (!inbox) {
       return { ok: false, status: 404, error: 'Unknown instance' };
+    }
+    // Canal suspendido (trial vencido / plan impago): no se persiste ni se
+    // responde nada. La instancia debería estar borrada en Evolution, pero un
+    // webhook tardío no puede reactivar el servicio por la ventana de atrás.
+    if (inbox.suspended === true) {
+      log.warn({ instance, inbox_id: inbox.id }, 'evolution: mensaje en inbox suspendido — ignorado');
+      return { ok: true, skipped: 'inbox_suspended' };
     }
 
     const event = (payload.event ?? '').toLowerCase();
@@ -218,6 +230,10 @@ export const evolutionWebhookService = {
     const inbox = await resolveInbox(instance);
     if (!inbox) {
       return { ok: false, status: 404, error: 'Unknown instance' };
+    }
+    // Suspendido: el estado lo fija el corte de ciclo de vida, no el proveedor.
+    if (inbox.suspended === true) {
+      return { ok: true, skipped: 'inbox_suspended' };
     }
 
     const data = payload.data as EvolutionConnectionUpdateData | undefined;

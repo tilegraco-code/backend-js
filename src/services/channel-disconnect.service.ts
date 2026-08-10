@@ -6,20 +6,33 @@ import { evolutionApiService } from './evolution-api.service';
 type InboxRow = {
   id: number;
   account_id: string | null;
+  provider: string | null;
   source: string | null;
   evolution_instance_name: string | null;
+  suspended: boolean | null;
 };
 
 /**
- * Desconecta en el proveedor (Unipile / Evolution) y luego hard-deletea todos
- * los inboxes de un cliente. Usado tanto por trials vencidos como por planes
- * impagos: la idea es no dejar "cuentas muertas" generando costo.
+ * Desconecta los canales de un cliente: destruye la sesión en el proveedor
+ * (Unipile / Evolution) y deja la fila de `unipile_inboxes` marcada como
+ * suspendida + desconectada, SIN borrarla. Usado tanto por trials vencidos como
+ * por planes impagos.
  *
- * Best-effort por canal: si la desconexión en el proveedor falla, se loguea
- * pero igual se borra la fila (la cuenta quedará huérfana en el proveedor, pero
- * preferimos no bloquear la limpieza del resto). Devuelve cuántas filas borró.
+ * Por qué soft y no delete:
+ * - El agente debe sobrevivir con su canal visible en estado "desconectado";
+ *   el vínculo agente↔canal vive en `unipile_inboxes.workflow_id`, así que
+ *   borrar la fila borra el vínculo y el canal desaparece del dashboard.
+ * - `web_snippets` cuelga de `unipile_inboxes` con ON DELETE CASCADE: borrar la
+ *   fila destruye el `public_key` del widget embebido en el sitio del cliente,
+ *   que no se recupera al pagar.
+ *
+ * Lo que sí es irreversible: la cuenta en Unipile y la instancia en Evolution se
+ * eliminan (ahí está el costo). Al reactivar hay que reconectar/re-escanear QR.
+ *
+ * Best-effort por canal: si la desconexión en el proveedor falla, se loguea pero
+ * la fila igual se marca como desconectada. Devuelve cuántos canales tocó.
  */
-export async function disconnectAndDeleteClientChannels(
+export async function disconnectClientChannels(
   clientId: number,
   dryRun: boolean,
   log: FastifyBaseLogger,
@@ -28,7 +41,7 @@ export async function disconnectAndDeleteClientChannels(
 
   const { data, error } = await supabase
     .from('unipile_inboxes')
-    .select('id, account_id, source, evolution_instance_name')
+    .select('id, account_id, provider, source, evolution_instance_name, suspended')
     .eq('client_id', clientId);
 
   if (error) {
@@ -36,16 +49,22 @@ export async function disconnectAndDeleteClientChannels(
     throw error;
   }
 
-  const inboxes = (data ?? []) as InboxRow[];
+  const all = (data ?? []) as InboxRow[];
+  // Idempotencia: los ya suspendidos no se vuelven a tocar (evita pegarle de
+  // nuevo al proveedor si el batch corre dos veces).
+  const inboxes = all.filter((i) => i.suspended !== true);
+
   if (inboxes.length === 0) {
-    cLog.info('channel-disconnect: cliente sin canales conectados');
+    cLog.info({ already_suspended: all.length }, 'channel-disconnect: sin canales activos que desconectar');
     return 0;
   }
 
   if (dryRun) {
-    cLog.info({ count: inboxes.length }, 'DRY RUN — no se desconecta ni borra ningún canal');
+    cLog.info({ count: inboxes.length }, 'DRY RUN — no se desconecta ningún canal');
     return inboxes.length;
   }
+
+  let touched = 0;
 
   for (const inbox of inboxes) {
     try {
@@ -58,28 +77,51 @@ export async function disconnectAndDeleteClientChannels(
           });
           await evolutionApiService.deleteInstance(instance);
         }
+      } else if (inbox.provider === 'WEB') {
+        // El snippet web no tiene cuenta en ningún proveedor: su `account_id` es
+        // el public_key del widget. Sólo se suspende (y al pagar se reactiva
+        // solo, sin reconectar nada).
+        cLog.info({ inbox_id: inbox.id }, 'channel-disconnect: snippet web — sólo se suspende');
       } else if (inbox.account_id) {
         await unipileApiService.deleteAccount(inbox.account_id);
       }
     } catch (err) {
       cLog.error(
         { err, inbox_id: inbox.id, source: inbox.source },
-        'channel-disconnect: error desconectando en el proveedor (se borra la fila igual)',
+        'channel-disconnect: error desconectando en el proveedor (se marca desconectado igual)',
       );
     }
+
+    // La instancia de Evolution ya no existe: limpiar el nombre evita que un
+    // webhook tardío (o una instancia nueva con el mismo nombre) matchee esta fila.
+    const now = new Date().toISOString();
+    const patch: Record<string, unknown> = {
+      suspended: true,
+      // `lifecycle_cut` = la cuenta en el proveedor se destruyó. Lo distingue de
+      // una pausa de MercadoPago, donde la cuenta sigue viva y se reactiva sola.
+      suspended_reason: 'lifecycle_cut',
+      suspended_at: now,
+      status: 'inactive',
+      account_status: 'disconnected',
+      updated_at: now,
+    };
+    if (inbox.source === 'evolution') {
+      patch.evolution_instance_name = null;
+    }
+
+    const { error: updateError } = await supabase
+      .from('unipile_inboxes')
+      .update(patch)
+      .eq('id', inbox.id);
+
+    if (updateError) {
+      cLog.error({ err: updateError, inbox_id: inbox.id }, 'channel-disconnect: update error');
+      throw updateError;
+    }
+
+    touched++;
   }
 
-  const { error: deleteError, count } = await supabase
-    .from('unipile_inboxes')
-    .delete({ count: 'exact' })
-    .eq('client_id', clientId);
-
-  if (deleteError) {
-    cLog.error({ err: deleteError }, 'channel-disconnect: hard delete error');
-    throw deleteError;
-  }
-
-  const deleted = count ?? inboxes.length;
-  cLog.info({ deleted }, 'channel-disconnect: canales desconectados y eliminados');
-  return deleted;
+  cLog.info({ disconnected: touched }, 'channel-disconnect: canales desconectados (filas conservadas)');
+  return touched;
 }

@@ -72,59 +72,95 @@ const p = (text: string): string =>
 export const accountLifecycleEmails = {
   trialWarning(): { subject: string; html: string } {
     return {
-      subject: 'Tu prueba de Tilegra termina mañana',
+      subject: 'Tu prueba de Tilegra está por terminar',
       html: layout({
         title: 'Tu período de prueba está por terminar',
         bodyHtml:
-          p('Tu prueba gratuita de Tilegra termina <strong>en las próximas 24 horas</strong>.') +
+          p('Tu prueba gratuita de Tilegra termina <strong>en las próximas horas</strong>.') +
           p(
-            'Para no perder tu canal de WhatsApp conectado ni tu configuración, elegí un plan antes de que finalice. Si no lo hacés, desvincularemos automáticamente el canal conectado.',
+            'Para no perder tu canal de WhatsApp conectado, activá un plan antes de que finalice. Si no lo hacés, desconectaremos el canal automáticamente: tu agente y toda su configuración quedan guardados, pero deja de responder mensajes.',
           ),
         cta: { label: 'Elegir un plan', href: `${APP_URL}/dashboard/billing` },
       }),
     };
   },
 
-  trialCut(): { subject: string; html: string } {
+  /** `channels` = cuántos canales se desconectaron (0 = el cliente no tenía ninguno). */
+  trialCut(channels: number): { subject: string; html: string } {
+    if (channels === 0) {
+      return {
+        subject: 'Tu prueba de Tilegra terminó',
+        html: layout({
+          title: 'Tu período de prueba terminó',
+          bodyHtml:
+            p('Tu prueba gratuita de Tilegra finalizó y todavía no activaste ningún plan.') +
+            p(
+              'Tu agente y su configuración quedan guardados. Activá un plan para conectar un canal y ponerlo a responder mensajes.',
+            ),
+          cta: { label: 'Activar mi plan', href: `${APP_URL}/dashboard/billing` },
+        }),
+      };
+    }
+
+    const noun = channels === 1 ? 'el canal que tenías conectado' : `los ${channels} canales que tenías conectados`;
     return {
-      subject: 'Desvinculamos tu canal de Tilegra',
+      subject: 'Desconectamos tu canal de Tilegra',
       html: layout({
-        title: 'Tu prueba terminó y desvinculamos tu canal',
+        title: 'Tu prueba terminó y desconectamos tu canal',
         bodyHtml:
           p(
-            'Tu período de prueba finalizó hace más de 24 horas y no se activó ningún plan, así que <strong>desvinculamos el canal que tenías conectado</strong>.',
+            `Tu período de prueba finalizó y no se activó ningún plan, así que <strong>desconectamos ${noun}</strong>.`,
           ) +
-          p('Cuando quieras volver, activá un plan y reconectá tu canal en minutos. Tus datos siguen disponibles.'),
-        cta: { label: 'Reactivar mi cuenta', href: `${APP_URL}/dashboard/billing` },
+          p(
+            'Tu agente, sus instrucciones y sus documentos quedan intactos: sólo perdió el canal. Activá un plan y volvé a vincularlo en minutos.',
+          ),
+        cta: { label: 'Activar mi plan', href: `${APP_URL}/dashboard/billing` },
       }),
     };
   },
 
   planWarning(): { subject: string; html: string } {
     return {
-      subject: 'Tu pago de Tilegra vence mañana',
+      subject: 'Tu pago de Tilegra está por vencer',
       html: layout({
         title: 'Tu próximo pago está por vencer',
         bodyHtml:
-          p('El pago de tu suscripción a Tilegra vence <strong>en las próximas 24 horas</strong>.') +
+          p('El pago de tu suscripción a Tilegra vence <strong>en las próximas horas</strong>.') +
           p(
-            'Verificá que tu medio de pago esté al día. Si el pago no se procesa, desconectaremos automáticamente todos tus canales para evitar cargos en cuentas inactivas.',
+            'Verificá que tu medio de pago esté al día. Si el pago no se procesa, desconectaremos tus canales para evitar cargos en cuentas inactivas. Tus agentes y su configuración quedan guardados.',
           ),
         cta: { label: 'Revisar mi facturación', href: `${APP_URL}/dashboard/billing` },
       }),
     };
   },
 
-  planCut(): { subject: string; html: string } {
+  /** `channels` = cuántos canales se desconectaron (0 = el cliente no tenía ninguno). */
+  planCut(channels: number): { subject: string; html: string } {
+    if (channels === 0) {
+      return {
+        subject: 'Tu suscripción a Tilegra quedó pausada',
+        html: layout({
+          title: 'Pausamos tu suscripción',
+          bodyHtml:
+            p('No registramos el pago de tu suscripción, así que <strong>pausamos tu cuenta</strong>.') +
+            p('Tus agentes y su configuración quedan guardados. Regularizá el pago para reactivar el servicio.'),
+          cta: { label: 'Regularizar mi pago', href: `${APP_URL}/dashboard/billing` },
+        }),
+      };
+    }
+
+    const noun = channels === 1 ? 'el canal asociado a tu cuenta' : `los ${channels} canales asociados a tu cuenta`;
     return {
       subject: 'Desconectamos tus canales por falta de pago',
       html: layout({
         title: 'Desconectamos tus canales',
         bodyHtml:
           p(
-            'No registramos el pago de tu suscripción y pasaron más de 24 horas desde el vencimiento, así que <strong>desconectamos todos los canales asociados a tu cuenta</strong>.',
+            `No registramos el pago de tu suscripción y pasó el período de gracia, así que <strong>desconectamos ${noun}</strong>.`,
           ) +
-          p('Regularizá tu pago para reactivar el servicio y volver a conectar tus canales.'),
+          p(
+            'Tus agentes y su configuración quedan intactos. Regularizá tu pago para reactivar el servicio y volver a vincular tus canales.',
+          ),
         cta: { label: 'Regularizar mi pago', href: `${APP_URL}/dashboard/billing` },
       }),
     };

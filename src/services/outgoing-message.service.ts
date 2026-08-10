@@ -56,7 +56,7 @@ async function sendOutgoing(
     // (chat.account_id guarda el instance name). Buscamos por ambas columnas.
     const { data: inbox, error: inboxError } = await supabase
       .from('unipile_inboxes')
-      .select('source, evolution_instance_name, account_status')
+      .select('source, evolution_instance_name, account_status, suspended')
       .eq('client_id', clientId)
       .or(`account_id.eq.${chat.account_id},evolution_instance_name.eq.${chat.account_id}`)
       .maybeSingle();
@@ -67,6 +67,10 @@ async function sendOutgoing(
     }
     if (!inbox) {
       return { ok: false, status: 404, error: 'Chat not found' };
+    }
+    // Canal suspendido por trial vencido o plan impago: no se envía nada.
+    if (inbox.suspended === true) {
+      return { ok: false, status: 402, error: 'Canal desconectado: activá un plan para reactivarlo' };
     }
 
     try {

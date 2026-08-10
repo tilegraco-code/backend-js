@@ -2,9 +2,10 @@ import type { FastifyBaseLogger } from 'fastify';
 import { supabase } from '../lib/supabase';
 import { getOwnerEmail } from '../lib/owner-email';
 import { emailService, accountLifecycleEmails } from './email.service';
-import { disconnectAndDeleteClientChannels } from './channel-disconnect.service';
+import { disconnectClientChannels } from './channel-disconnect.service';
 
 const DEFAULT_GRACE_HOURS = 24;
+const DEFAULT_WARNING_HOURS = 48;
 
 type Reason = 'trial_expired' | 'payment_overdue';
 type Stage = 'warning' | 'cut';
@@ -27,6 +28,18 @@ function getGraceMs(): number {
   const hours = Number(process.env.ACCOUNT_LIFECYCLE_GRACE_HOURS ?? DEFAULT_GRACE_HOURS);
   const safe = Number.isFinite(hours) && hours >= 0 ? hours : DEFAULT_GRACE_HOURS;
   return safe * 3600_000;
+}
+
+/**
+ * Ventana de aviso previo. Es más ancha que la gracia a propósito: el cron corre
+ * una vez por día, así que una ventana igual a la gracia (24h) deja avisos de
+ * pocas horas — o ninguno si el vencimiento cae justo después de una corrida.
+ * Con 48h siempre hay al menos una corrida de aviso antes del corte.
+ */
+function getWarningMs(): number {
+  const hours = Number(process.env.ACCOUNT_LIFECYCLE_WARNING_HOURS ?? DEFAULT_WARNING_HOURS);
+  const safe = Number.isFinite(hours) && hours > 0 ? hours : DEFAULT_WARNING_HOURS;
+  return Math.max(safe * 3600_000, getGraceMs());
 }
 
 async function logRun(
@@ -59,7 +72,7 @@ export const accountLifecycleService = {
    */
   async runTrialWarnings(dryRun: boolean, log: FastifyBaseLogger): Promise<{ sent: number; errors: number }> {
     const now = new Date();
-    const upper = new Date(now.getTime() + getGraceMs()).toISOString();
+    const upper = new Date(now.getTime() + getWarningMs()).toISOString();
 
     const { data, error } = await supabase
       .from('client')
@@ -105,9 +118,11 @@ export const accountLifecycleService = {
   },
 
   /**
-   * Desconecta canales de trials vencidos hace más de la gracia que no
-   * avanzaron a un plan. Verifica defensivamente que no exista billing
-   * autorizado antes de cortar (por si el webhook no limpió trial_ends_at).
+   * Desconecta (soft: suspende, no borra) los canales de trials vencidos hace
+   * más de la gracia que no avanzaron a un plan. El agente y su configuración
+   * sobreviven; sólo queda sin canal. Verifica defensivamente que no exista
+   * billing autorizado antes de cortar (por si el webhook no limpió
+   * trial_ends_at).
    */
   async runTrialCuts(
     dryRun: boolean,
@@ -155,10 +170,10 @@ export const accountLifecycleService = {
         continue;
       }
       try {
-        const deleted = await disconnectAndDeleteClientChannels(clientId, dryRun, log);
+        const deleted = await disconnectClientChannels(clientId, dryRun, log);
         const email = await getOwnerEmail(clientId, log);
         if (!dryRun && email) {
-          const { subject, html } = accountLifecycleEmails.trialCut();
+          const { subject, html } = accountLifecycleEmails.trialCut(deleted);
           await emailService.send(email, subject, html, log);
         }
         if (!dryRun) {
@@ -184,7 +199,7 @@ export const accountLifecycleService = {
    */
   async runPlanWarnings(dryRun: boolean, log: FastifyBaseLogger): Promise<{ sent: number; errors: number }> {
     const now = new Date();
-    const upper = new Date(now.getTime() + getGraceMs()).toISOString();
+    const upper = new Date(now.getTime() + getWarningMs()).toISOString();
 
     const { data, error } = await supabase
       .from('client_billing')
@@ -231,8 +246,8 @@ export const accountLifecycleService = {
   },
 
   /**
-   * Desconecta TODOS los canales de clientes con plan cuyo pago venció hace
-   * más de la gracia y no se renovó (next_payment_date sigue en el pasado).
+   * Desconecta (soft) TODOS los canales de clientes con plan cuyo pago venció
+   * hace más de la gracia y no se renovó (next_payment_date sigue en el pasado).
    */
   async runPlanCuts(
     dryRun: boolean,
@@ -263,10 +278,10 @@ export const accountLifecycleService = {
     for (const row of rows) {
       const clientId = row.client_id as number;
       try {
-        const deleted = await disconnectAndDeleteClientChannels(clientId, dryRun, log);
+        const deleted = await disconnectClientChannels(clientId, dryRun, log);
         const email = await getOwnerEmail(clientId, log);
         if (!dryRun && email) {
-          const { subject, html } = accountLifecycleEmails.planCut();
+          const { subject, html } = accountLifecycleEmails.planCut(deleted);
           await emailService.send(email, subject, html, log);
         }
         if (!dryRun) {
