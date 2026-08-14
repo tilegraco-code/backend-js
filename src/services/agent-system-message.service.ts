@@ -145,4 +145,35 @@ export const agentSystemMessageService = {
       TRANSFER_BLOCK,
     ].join('\n');
   },
+
+  /**
+   * Bloque de negocio para un agente ROUTER. NO es un prompt de atención: el router no le
+   * habla al usuario, sólo clasifica el tema y deriva. Los prompts que atienden son los de
+   * los sub-agentes (cada rama es un agente normal y usa build()).
+   *
+   * Por eso acá va SOLO lo que ayuda a desambiguar entre ramas (rol y contexto del negocio),
+   * y se dejan afuera tareas, herramientas, estilo y el bloque de transferencia: al
+   * clasificador no le aportan, le agregan tokens en cada turno y lo empujan a intentar
+   * responder en vez de derivar.
+   *
+   * El runtime lo recibe como `system_message` y lo pega debajo de sus propias reglas de
+   * clasificación (ver _instrucciones() en agente-tilegra/app/agent/router.py).
+   */
+  async buildRouterInstructions(agentId: number): Promise<string> {
+    const { data, error } = await supabase
+      .from('agentprops')
+      .select('rol, contexto')
+      .eq('agent_id', agentId)
+      .maybeSingle();
+    if (error) throw error;
+
+    const props = (data ?? {}) as { rol?: string; contexto?: string };
+    return [
+      ['# Negocio', asText(props.rol)],
+      ['# Contexto', asText(props.contexto)],
+    ]
+      .filter(([, cuerpo]) => cuerpo.trim())
+      .map((bloque) => bloque.join('\n'))
+      .join('\n');
+  },
 };

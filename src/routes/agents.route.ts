@@ -39,6 +39,12 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
 
   // GET /api/agents/:agentId/runtime-config → todo lo que el runtime LangGraph necesita en
   // una sola llamada: system message estático + client_id + allow-list de tools del agente.
+  //
+  // Sirve a las DOS topologías, y el runtime elige por `agent_type`:
+  //   'react'  → el agente de siempre. La respuesta no cambia en nada.
+  //   'router' → clasifica y deriva. Devuelve `routes` y NO devuelve tools: el router no
+  //              ejecuta nada, ejecutan las ramas. Cada rama es un agente normal y el runtime
+  //              trae su config pegándole a ESTE MISMO endpoint con el agent_id del hijo.
   r.get(
     '/:agentId/runtime-config',
     {
@@ -63,6 +69,16 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
                 config: z.record(z.string(), z.unknown()).nullable(),
               }),
             ),
+            agent_type: z.enum(['react', 'router']),
+            // Ramas del router (vacío si agent_type === 'react').
+            routes: z.array(
+              z.object({
+                agent_id: z.number(),
+                nombre: z.string(),
+                descripcion: z.string(),
+                default: z.boolean(),
+              }),
+            ),
           }),
           502: errorResponseSchema,
         },
@@ -71,14 +87,40 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
     async (request, reply) => {
       try {
         const agentId = request.params.agentId;
-        const [system_message, tools, apiToolsRes] = await Promise.all([
-          agentSystemMessageService.build(agentId),
-          composioService.getAgentMcpTools(agentId),
-          supabase
-            .from('agent_tools')
-            .select('name, description, type, config')
-            .eq('agent_id', agentId)
-            .eq('enabled', true),
+
+        // El agente primero: `agent_type` decide qué prompt se arma y si hace falta pedirle
+        // las tools a Composio (para un router es una llamada al pedo).
+        const { data: agent } = await supabase
+          .from('agent')
+          .select('project_id, agent_type')
+          .eq('agent_id', agentId)
+          .maybeSingle();
+        const agent_type = ((agent as { agent_type?: string } | null)?.agent_type ?? 'react') as
+          | 'react'
+          | 'router';
+        const isRouter = agent_type === 'router';
+
+        const [system_message, tools, apiToolsRes, routesRes] = await Promise.all([
+          isRouter
+            ? agentSystemMessageService.buildRouterInstructions(agentId)
+            : agentSystemMessageService.build(agentId),
+          isRouter
+            ? Promise.resolve({} as Record<string, string[]>)
+            : composioService.getAgentMcpTools(agentId),
+          isRouter
+            ? Promise.resolve({ data: [] as Record<string, unknown>[] })
+            : supabase
+                .from('agent_tools')
+                .select('name, description, type, config')
+                .eq('agent_id', agentId)
+                .eq('enabled', true),
+          isRouter
+            ? supabase
+                .from('agent_route')
+                .select('child_agent_id, nombre, descripcion, is_default')
+                .eq('parent_agent_id', agentId)
+                .order('sort_order', { ascending: true })
+            : Promise.resolve({ data: [] as Record<string, unknown>[] }),
         ]);
 
         const api_tools = (apiToolsRes.data ?? []).map((t) => ({
@@ -88,36 +130,51 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
           config: (t.config as Record<string, unknown> | null) ?? null,
         }));
 
+        // `is_default` se renombra a `default` porque es el nombre que espera el runtime.
+        const routes = (routesRes.data ?? []).map((r) => ({
+          agent_id: r.child_agent_id as number,
+          nombre: r.nombre as string,
+          descripcion: (r.descripcion as string | null) ?? '',
+          default: Boolean(r.is_default),
+        }));
+
         // client_id: agent → project → client_id. De paso resolvemos el project_id (scope del
         // RAG) y si el proyecto tiene documentos listos (has_knowledge) para que el runtime
-        // decida si adjunta el tool de búsqueda en la base de conocimiento.
+        // decida si adjunta el tool de búsqueda en la base de conocimiento. Un router no hace
+        // RAG (no responde), así que ahí ni preguntamos.
         let client_id = 0;
         let project_id: number | null = null;
         let has_knowledge = false;
-        const { data: agent } = await supabase
-          .from('agent')
-          .select('project_id')
-          .eq('agent_id', agentId)
-          .maybeSingle();
         if (agent?.project_id != null) {
           project_id = agent.project_id;
-          const [{ data: project }, { count }] = await Promise.all([
+          const [{ data: project }, docs] = await Promise.all([
             supabase
               .from('project')
               .select('client_id')
               .eq('project_id', agent.project_id)
               .maybeSingle(),
-            supabase
-              .from('documents')
-              .select('id', { count: 'exact', head: true })
-              .eq('project_id', agent.project_id)
-              .eq('status', 'ready'),
+            isRouter
+              ? Promise.resolve({ count: 0 })
+              : supabase
+                  .from('documents')
+                  .select('id', { count: 'exact', head: true })
+                  .eq('project_id', agent.project_id)
+                  .eq('status', 'ready'),
           ]);
           client_id = project?.client_id ?? 0;
-          has_knowledge = (count ?? 0) > 0;
+          has_knowledge = (docs.count ?? 0) > 0;
         }
 
-        return { system_message, client_id, project_id, has_knowledge, tools, api_tools };
+        return {
+          system_message,
+          client_id,
+          project_id,
+          has_knowledge,
+          tools,
+          api_tools,
+          agent_type,
+          routes,
+        };
       } catch (e) {
         return reply.status(502).send({ error: (e as Error)?.message ?? 'Error desconocido' });
       }

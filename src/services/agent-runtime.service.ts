@@ -116,29 +116,50 @@ export async function runViaAgent(
  * TTL. No-op para agentes n8n (esos leen la config en vivo). Best-effort.
  * Lo llama el dashboard vía `POST /api/agents/:id/refresh-runtime` (el dashboard no conoce al
  * runtime; delega en el backend).
+ *
+ * EN CASCADA: si el agente que cambió es rama de uno o más routers, hay que invalidar también
+ * a esos padres. El runtime compila el router con las ramas ADENTRO (un solo objeto cacheado
+ * por agent_id), así que invalidar sólo al hijo lo dejaría sirviendo la versión vieja de la
+ * rama hasta que venciera su TTL.
  */
 export async function refreshAgentRuntimeCache(
   agentId: number,
   log?: FastifyBaseLogger,
 ): Promise<void> {
-  const { data: agent } = await supabase
-    .from('agent')
-    .select('runtime')
-    .eq('agent_id', agentId)
-    .maybeSingle();
-  if ((agent as { runtime?: string } | null)?.runtime !== 'langgraph') return;
-
   const url = process.env.AGENT_RUNTIME_URL;
   const internalKey = process.env.INTERNAL_API_KEY ?? '';
   if (!url) return;
-  try {
-    await fetch(`${url.replace(/\/$/, '')}/agents/${agentId}/refresh`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${internalKey}` },
-    });
-  } catch (e) {
-    log?.error({ err: e, agentId }, 'refresh del runtime falló');
-  }
+
+  // El agente que cambió + los routers que lo tienen como rama.
+  const { data: padres } = await supabase
+    .from('agent_route')
+    .select('parent_agent_id')
+    .eq('child_agent_id', agentId);
+  const candidatos = [
+    ...new Set([agentId, ...(padres ?? []).map((p) => p.parent_agent_id as number)]),
+  ];
+
+  // Sólo los que corren en LangGraph: los de n8n leen la config en vivo y no tienen qué invalidar.
+  const { data: agentes } = await supabase
+    .from('agent')
+    .select('agent_id')
+    .in('agent_id', candidatos)
+    .eq('runtime', 'langgraph');
+  const aRefrescar = (agentes ?? []).map((a) => a.agent_id as number);
+  if (!aRefrescar.length) return;
+
+  await Promise.all(
+    aRefrescar.map(async (id) => {
+      try {
+        await fetch(`${url.replace(/\/$/, '')}/agents/${id}/refresh`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${internalKey}` },
+        });
+      } catch (e) {
+        log?.error({ err: e, agentId: id, origen: agentId }, 'refresh del runtime falló');
+      }
+    }),
+  );
 }
 
 /**
