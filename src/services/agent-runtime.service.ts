@@ -121,6 +121,12 @@ export async function runViaAgent(
  * a esos padres. El runtime compila el router con las ramas ADENTRO (un solo objeto cacheado
  * por agent_id), así que invalidar sólo al hijo lo dejaría sirviendo la versión vieja de la
  * rama hasta que venciera su TTL.
+ *
+ * NO se filtra por `agent.runtime`. Antes se hacía, para ahorrar la llamada en agentes de n8n,
+ * pero eso rompía la cascada: un sub-agente con runtime 'n8n' quedaba afuera y su config seguía
+ * cacheada en Redis, así que el padre se recompilaba leyendo la rama vieja. El /refresh del
+ * runtime es idempotente y barato (borra una clave que puede no existir), así que sale más
+ * barato llamarlo de más que razonar sobre a quién le corresponde.
  */
 export async function refreshAgentRuntimeCache(
   agentId: number,
@@ -135,18 +141,9 @@ export async function refreshAgentRuntimeCache(
     .from('agent_route')
     .select('parent_agent_id')
     .eq('child_agent_id', agentId);
-  const candidatos = [
+  const aRefrescar = [
     ...new Set([agentId, ...(padres ?? []).map((p) => p.parent_agent_id as number)]),
   ];
-
-  // Sólo los que corren en LangGraph: los de n8n leen la config en vivo y no tienen qué invalidar.
-  const { data: agentes } = await supabase
-    .from('agent')
-    .select('agent_id')
-    .in('agent_id', candidatos)
-    .eq('runtime', 'langgraph');
-  const aRefrescar = (agentes ?? []).map((a) => a.agent_id as number);
-  if (!aRefrescar.length) return;
 
   await Promise.all(
     aRefrescar.map(async (id) => {
