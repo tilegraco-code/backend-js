@@ -3,6 +3,7 @@ import { FastifyBaseLogger } from 'fastify';
 import { supabase } from '../lib/supabase';
 import { evolutionApiService } from './evolution-api.service';
 import { unipileApiService } from './unipile-api.service';
+import { mercadolibreService, prepareText } from './mercadolibre.service';
 
 type SendResult =
   | { ok: true; message_id: string }
@@ -19,7 +20,7 @@ const WEB_PROVIDERS = new Set(['WEB', 'TEST']);
 
 /**
  * Resuelve el provider del chat y envía un saliente por el protocolo correcto
- * (WEB / Unipile / Evolution). Persiste el mensaje de forma idempotente y
+ * (WEB / Unipile / Evolution / MercadoLibre). Persiste el mensaje de forma idempotente y
  * actualiza el preview del chat. Devuelve el message_id definitivo, que el
  * front usa para reconciliar el optimista y deduplicar el INSERT de Realtime.
  */
@@ -45,6 +46,10 @@ async function sendOutgoing(
 
   const provider = (chat.provider ?? '').toUpperCase();
   let messageId: string;
+  // Lo que realmente sale al canal. MercadoLibre recorta a 350 caracteres y no
+  // acepta nada fuera de latin1, así que ahí difiere del `text` que nos pidieron:
+  // persistimos lo enviado, no lo pedido, para que la bandeja no mienta.
+  let sentText = text;
 
   // 2. Enviar según provider.
   if (WEB_PROVIDERS.has(provider)) {
@@ -86,6 +91,37 @@ async function sendOutgoing(
           chat.contact_handle ?? (chatId.split('@')[0]?.split(':').pop() as string);
         const resp = await evolutionApiService.sendText({ instanceName, number, text });
         messageId = resp.key?.id ?? randomUUID();
+      } else if (inbox.source === 'mercadolibre') {
+        // El chat_id de ML es `ml:${seller}:${pack}`: NO lo parseamos. El seller
+        // está en account_id y el pack en contact_handle, igual que en Evolution.
+        const mlUserId = Number(chat.account_id);
+        const packId = chat.contact_handle;
+        if (!Number.isFinite(mlUserId) || !packId) {
+          return { ok: false, status: 422, error: 'Chat de MercadoLibre incompleto' };
+        }
+        sentText = prepareText(text, log);
+        if (!sentText) {
+          return { ok: false, status: 422, error: 'Mensaje vacío tras sanitizar para MercadoLibre' };
+        }
+        const resp = await mercadolibreService.sendMessage(
+          { mlUserId, packId, text: sentText },
+          log,
+        );
+        messageId = resp.id ?? resp.message_id ?? randomUUID();
+
+        // ML devuelve 200 aunque el moderador rechace el mensaje: en ese caso el
+        // comprador NO lo ve. No falla el envío (ya quedó registrado), pero tiene
+        // que verse en los logs y no pasar por entrega exitosa.
+        const moderation = resp.message_moderation ?? resp.moderation;
+        if (
+          resp.status?.toLowerCase() === 'moderated' ||
+          moderation?.status?.toLowerCase() === 'rejected'
+        ) {
+          log.warn(
+            { chatId, packId, reason: moderation?.reason },
+            'mercadolibre: mensaje MODERADO por ML — el comprador no lo recibió',
+          );
+        }
       } else {
         const resp = await unipileApiService.sendMessage(chatId, text);
         messageId = resp.id ?? resp.message_id ?? randomUUID();
@@ -103,7 +139,7 @@ async function sendOutgoing(
     chat_id: chatId,
     client_id: clientId,
     message_id: messageId,
-    content: text,
+    content: sentText,
     direction: 'outgoing',
     sender_name: null,
     created_at: nowIso,
@@ -118,7 +154,7 @@ async function sendOutgoing(
   const { error: chatUpdateError } = await supabase
     .from('unipile_chats')
     .update({
-      last_message_preview: text.slice(0, 120),
+      last_message_preview: sentText.slice(0, 120),
       last_message_at: nowIso,
       updated_at: nowIso,
     })

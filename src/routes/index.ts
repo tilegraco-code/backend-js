@@ -8,6 +8,7 @@ import { adminAccountLifecycleRoute } from './admin/account-lifecycle.route';
 import { adminUsageBillingRoute } from './admin/usage-billing.route';
 import { tiendanubeOauthRoutes } from './tiendanube-oauth.route';
 import { tiendanubeRoutes } from './tiendanube.route';
+import { mercadolibreOauthRoutes } from './mercadolibre-oauth.route';
 import { googleOauthRoutes } from './google-oauth.route';
 import { googleRoutes } from './google.route';
 import { composioRoutes } from './composio.route';
@@ -32,6 +33,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // OAuth de TiendaNube: público (lo pega el navegador / TiendaNube). La seguridad
   // la da el `state` firmado, no el internalTokenAuth. Por eso va fuera del scope /api.
   await app.register(tiendanubeOauthRoutes, { prefix: '/api/tiendanube' });
+
+  // OAuth de MercadoLibre: público, misma lógica que TiendaNube. ML exige que el
+  // redirect_uri sea estático, así que el client_id viaja en el `state` firmado.
+  await app.register(mercadolibreOauthRoutes, { prefix: '/api/mercadolibre' });
 
   // OAuth de Google: público (lo pega el navegador / Google). Misma lógica que
   // TiendaNube: la seguridad la da el `state` firmado, por eso va fuera del scope /api.

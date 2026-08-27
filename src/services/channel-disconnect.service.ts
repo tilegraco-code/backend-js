@@ -2,6 +2,7 @@ import type { FastifyBaseLogger } from 'fastify';
 import { supabase } from '../lib/supabase';
 import { unipileApiService } from './unipile-api.service';
 import { evolutionApiService } from './evolution-api.service';
+import { mercadolibreService } from './mercadolibre.service';
 
 type InboxRow = {
   id: number;
@@ -76,6 +77,13 @@ export async function disconnectClientChannels(
             cLog.warn({ err, instance }, 'channel-disconnect: evolution logout falló (no bloqueante)');
           });
           await evolutionApiService.deleteInstance(instance);
+        }
+      } else if (inbox.source === 'mercadolibre') {
+        // No hay cuenta que destruir del lado de ML: lo que hay es un grant OAuth.
+        // Borrar la conexión nos deja sin tokens, que es el equivalente a cortar el
+        // servicio. Al reactivar, el cliente vuelve a autorizar la app.
+        if (inbox.account_id) {
+          await mercadolibreService.deleteConnection(Number(inbox.account_id));
         }
       } else if (inbox.provider === 'WEB') {
         // El snippet web no tiene cuenta en ningún proveedor: su `account_id` es

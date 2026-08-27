@@ -1,8 +1,10 @@
 import { FastifyInstance } from 'fastify';
 import { unipileWebhookRoutes } from './unipile.route';
 import { evolutionWebhookRoutes } from './evolution.route';
+import { mercadolibreWebhookRoutes } from './mercadolibre.route';
 
 export async function webhookRoutes(app: FastifyInstance): Promise<void> {
   await app.register(unipileWebhookRoutes);
   await app.register(evolutionWebhookRoutes);
+  await app.register(mercadolibreWebhookRoutes);
 }
