@@ -178,12 +178,29 @@ export const mercadolibreApiService = {
   /**
    * Un mensaje por id. El `resource` de la notificación del tópico `messages` es
    * el id crudo (a veces con "/messages/" adelante) — normalizamos en el caller.
+   *
+   * OJO con la forma de la respuesta: ML documenta DOS y devuelve la segunda.
+   * El formato viejo era el mensaje plano; el actual lo envuelve en
+   * `{ paging, conversation_status, messages: [...] }`, igual que la consulta de
+   * una conversación entera. Devolvemos siempre el mensaje plano para que los
+   * callers no tengan que saber en cuál de las dos está la API hoy.
    */
   async fetchMessage(messageId: string, token: string): Promise<MercadolibreMessage> {
-    return get<MercadolibreMessage>(
+    const raw = await get<MercadolibreMessage & MercadolibreConversation>(
       `/messages/${encodeURIComponent(messageId)}?tag=post_sale`,
       token,
     );
+
+    if (Array.isArray(raw?.messages)) {
+      const lista = raw.messages;
+      const match = lista.find((m) => (m.id ?? m.message_id) === messageId) ?? lista[0];
+      if (!match) {
+        throw new Error(`MercadoLibre devolvió una lista vacía para el mensaje ${messageId}`);
+      }
+      return match;
+    }
+
+    return raw;
   },
 
   /**

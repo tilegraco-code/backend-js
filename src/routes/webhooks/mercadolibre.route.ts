@@ -91,7 +91,20 @@ export async function mercadolibreWebhookRoutes(app: FastifyInstance): Promise<v
           mercadolibreWebhookService
             .processMessage(payload, log)
             .then((result) => {
-              if (!result.ok || !result.forward) return;
+              // Los descartes se loguean: este camino corre en background y su
+              // resultado no vuelve por la respuesta HTTP, así que sin esto un
+              // mensaje entrante se puede caer sin dejar rastro en ningún lado.
+              if (!result.ok) {
+                log.error({ resource: payload.resource, error: result.error },
+                  'mercadolibre: mensaje entrante NO procesado');
+                return;
+              }
+              if (result.skipped) {
+                log.info({ resource: payload.resource, skipped: result.skipped },
+                  'mercadolibre: mensaje entrante descartado');
+                return;
+              }
+              if (!result.forward) return;
               const { workflowId, payload: forwardPayload } = result.forward;
               return dispatchToRuntime(forwardPayload, workflowId, 'mercadolibre', log);
             })
