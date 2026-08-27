@@ -87,6 +87,9 @@ export function renderSaleTemplate(
     .replace(/\{total\}/g, vars.total ?? '')
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/ ([,.!?])/g, '$1')
+    // Una variable vacía puede dejar puntuación huérfana pegada a la siguiente
+    // ("¡Gracias por tu compra,!"). Gana el signo fuerte.
+    .replace(/([,;:])+\s*([.!?])/g, '$2')
     .trim();
 }
 

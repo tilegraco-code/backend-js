@@ -13,7 +13,9 @@ export async function mercadolibreOauthRoutes(app: FastifyInstance): Promise<voi
 
   function dashboardUrl(status: 'connected' | 'error'): string {
     const base = (process.env.DASHBOARD_URL ?? '').replace(/\/$/, '');
-    return `${base}/dashboard/integrations?mercadolibre=${status}`;
+    // Canales y no Integraciones: MercadoLibre crea una fila en unipile_inboxes,
+    // así que consume cupo de canal y se administra junto al resto de los canales.
+    return `${base}/dashboard/connect?mercadolibre=${status}`;
   }
 
   // GET /api/mercadolibre/oauth/connect?state=… → redirige al authorize de ML.
