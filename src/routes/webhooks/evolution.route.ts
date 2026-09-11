@@ -68,14 +68,16 @@ export async function evolutionWebhookRoutes(app: FastifyInstance): Promise<void
           return reply.status(result.status).send({ error: result.error });
         }
 
-        // ACK inmediato; la ejecución del agente (n8n o LangGraph) va en background.
-        if (result.forward) {
-          const { workflowId, payload: n8nPayload } = result.forward;
+        // ACK inmediato; la ingesta del archivo y la ejecución del agente (n8n o
+        // LangGraph) van en background.
+        if (result.forward || result.ingest) {
           const log = request.log;
           setImmediate(() => {
-            dispatchToRuntime(n8nPayload, workflowId, 'whatsapp', log).catch(() => {
-              /* errores ya logueados dentro */
-            });
+            evolutionWebhookService
+              .runBackground(result, 'whatsapp', log, dispatchToRuntime)
+              .catch(() => {
+                /* errores ya logueados dentro */
+              });
           });
         }
 

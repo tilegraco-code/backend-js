@@ -2,10 +2,10 @@
 
 Plan de implementación.
 
-**Estado (2026-09-11):** rama `imagenes` en `backend-js` y en `agente-tilegra`. Fases 1 y 2
-implementadas (typecheck y tests en verde). Falta: correr `db/migrations/chat_attachments.sql`,
-probar con una foto y un PDF reales, y medir el costo por turno con imagen. Las fases 3 a 6
-(snippet web, Evolution, ML, dashboard) no están empezadas.
+**Estado (2026-09-11):** rama `imagenes` en `backend-js` y en `agente-tilegra`. Fases 1, 2 y 4
+implementadas (typecheck y tests en verde) y la migración ya corrida en el proyecto Dashboard.
+Falta: probar con una foto y un PDF reales, y medir el costo por turno con imagen. Las fases 3,
+5 y 6 (snippet web, ML, dashboard) no están empezadas.
 
 ## Contexto
 
@@ -166,11 +166,16 @@ durante la llamada.
    no descartar mensajes sin texto, mandar `attachments` en `/invoke`.
 2. **Runtime multimodal** en agente-tilegra: contrato, armado del mensaje, extracción de PDF,
    descripción, poda del historial, topes, flag `vision`.
-3. **Snippet web**: el widget sube directo a Storage con una URL de subida firmada. Se saltea
-   el paso de bajar del proveedor, que es el caro. La ingesta del widget no está en backend-js,
-   hay que ubicarla en el dashboard.
-4. **Evolution**: los bytes no vienen en el webhook, hay que pedirlos con
-   `getBase64FromMediaMessage`.
+3. **Snippet web** — BLOQUEADA, y no por los adjuntos. El widget
+   (`app/api/widget/[public_key]/messages/route.ts` en el dashboard) postea al webhook de n8n,
+   así que un visitante que habla con un agente LangGraph no recibe respuesta. Primero hay que
+   apuntarlo a `POST /api/agents/run-turn` de backend-js, que es lo que ya hace el test del
+   dashboard. Recién después tiene sentido sumarle adjuntos: el widget los sube directo a
+   Storage con una URL de subida firmada y se saltea el paso de bajar del proveedor.
+   Sin apuro: hoy no hay ni un snippet creado en producción.
+4. **Evolution** — HECHA. Los bytes no vienen en el webhook: se piden con
+   `POST /chat/getBase64FromMediaMessage/{instance}` por el id del mensaje. Un mensaje sin
+   texto pero con archivo ya no se descarta. Se ignoran los stickers a propósito.
 5. **MercadoLibre**: los mensajes post venta admiten adjuntos y el flujo ya trae el mensaje por
    API. Confirmar contra un payload real con adjunto antes de estimar.
 6. **Dashboard**: render del adjunto en la bandeja. Independiente, va cuando quieras.
@@ -196,7 +201,16 @@ Devuelve el binario.
 
 ### Evolution
 
-El webhook no manda bytes. Hay que pedirlos con `POST /chat/getBase64FromMediaMessage/{instance}`.
+El webhook no manda bytes: sólo avisa que el mensaje trae media. Se piden con
+
+```
+POST {base}/chat/getBase64FromMediaMessage/{instance}
+apikey: <api key>
+{ "message": { "key": { "id": "<message_id>" } }, "convertToMp4": false }
+```
+
+y vuelve `{ base64, mimetype, fileName }`. WhatsApp manda un solo archivo por mensaje. Ojo con
+`documentWithCaptionMessage`: los PDF reenviados llegan con el `documentMessage` anidado.
 
 ### MercadoLibre
 
