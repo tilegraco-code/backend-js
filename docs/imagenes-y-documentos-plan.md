@@ -3,9 +3,9 @@
 Plan de implementación.
 
 **Estado (2026-09-11):** rama `imagenes` en `backend-js`, `agente-tilegra` y `dashboard-tilegra`.
-Fases 1 a 4 implementadas (typecheck y tests en verde) y la migración ya corrida en el proyecto
-Dashboard. Falta: probar con una foto y un PDF reales, y medir el costo por turno con imagen.
-Las fases 5 y 6 (MercadoLibre, render en la bandeja) no están empezadas.
+Las seis fases implementadas (typecheck y tests en verde) y la migración corrida en el proyecto
+Dashboard. Falta probarlo de punta a punta con una foto y un PDF reales, y medir el costo por
+turno con imagen. MercadoLibre es el único canal SIN verificar contra un payload real.
 
 ## Contexto
 
@@ -179,9 +179,17 @@ durante la llamada.
 4. **Evolution** — HECHA. Los bytes no vienen en el webhook: se piden con
    `POST /chat/getBase64FromMediaMessage/{instance}` por el id del mensaje. Un mensaje sin
    texto pero con archivo ya no se descarta. Se ignoran los stickers a propósito.
-5. **MercadoLibre**: los mensajes post venta admiten adjuntos y el flujo ya trae el mensaje por
-   API. Confirmar contra un payload real con adjunto antes de estimar.
-6. **Dashboard**: render del adjunto en la bandeja. Independiente, va cuando quieras.
+5. **MercadoLibre** — HECHA, pero SIN VERIFICAR. Los docs de mensajería de ML no son
+   accesibles sin sesión, así que el nombre del campo de adjuntos y el path de descarga
+   salen de la doc pública de global selling. Por eso está escrito defensivo: se aceptan
+   `message_attachments` y `attachments`, el mime se deduce del nombre si no viene, y un
+   adjunto que no se puede bajar se loguea y el mensaje sigue como texto. La ingesta va
+   INLINE porque `processMessage` ya corre entero en background. Hay que mirar el log la
+   primera vez que un comprador mande una foto.
+6. **Dashboard** — HECHA. Las imágenes se muestran en la burbuja, el resto va como link.
+   La URL se firma al vuelo en `/api/unipile/attachments` en vez de al listar los mensajes:
+   una firmada vence, y con la bandeja abierta un rato las imágenes se irían rompiendo de a
+   una. El scope sale del prefijo del path.
 
 ---
 
@@ -217,5 +225,16 @@ y vuelve `{ base64, mimetype, fileName }`. WhatsApp manda un solo archivo por me
 
 ### MercadoLibre
 
-Adjuntos en mensajería post venta, se bajan con el token del vendedor. Pendiente de confirmar
-contra un payload real.
+Adjuntos en mensajería post venta, se bajan con el token del vendedor:
+
+```
+GET https://api.mercadolibre.com/messages/attachments/{attachment_id}?tag=post_sale&site_id=MLA
+Authorization: Bearer <token del vendedor>
+```
+
+Devuelve el binario. El `attachment_id` de ML tiene forma de nombre de archivo
+(`123_uuid.png`), de ahí que el mime se pueda deducir de la extensión.
+
+SIN CONFIRMAR contra un payload real: la doc de mensajería local devuelve 403 y esto sale de
+la de global selling, que usa el prefijo `/marketplace`. Si el primer adjunto real falla, lo
+más probable es que haya que agregar ese prefijo.

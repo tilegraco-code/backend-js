@@ -12,7 +12,16 @@ import { supabase } from '../lib/supabase';
 import type { N8nForwardPayload } from './n8n-forward';
 import { mercadolibreApiService } from './mercadolibre-api.service';
 import { mercadolibreService, prepareText, renderSaleTemplate } from './mercadolibre.service';
+import {
+  describeForInbox,
+  ingestAttachments,
+  kindFromMime,
+  signAttachments,
+  type PendingAttachment,
+  type StoredAttachment,
+} from './attachment-ingest.service';
 import type {
+  MercadolibreAttachment,
   MercadolibreMessage,
   MercadolibreNotification,
   MercadolibreOrder,
@@ -48,6 +57,42 @@ function extractText(message: MercadolibreMessage): string {
 }
 
 /** Un mensaje pertenece a un pack; el id sale de `message_resources`. */
+/**
+ * Adjuntos del mensaje, normalizados.
+ *
+ * ML no manda el mime de forma consistente, así que cuando no viene se deduce de la
+ * extensión del nombre del archivo: el id de un adjunto de ML tiene forma de nombre
+ * (`123_uuid.png`), así que casi siempre alcanza.
+ */
+function extractAttachments(message: MercadolibreMessage): PendingAttachment[] {
+  const crudos: MercadolibreAttachment[] =
+    message.message_attachments ?? message.attachments ?? [];
+
+  return crudos
+    .map((a) => {
+      const id = a.filename ?? a.id ?? a.original_filename ?? a.name ?? '';
+      const nombre = a.original_filename ?? a.name ?? a.filename ?? null;
+      return { providerId: id, mime: a.mimetype ?? a.type ?? mimeFromName(id), name: nombre };
+    })
+    .filter((a) => a.providerId);
+}
+
+/** Mime a partir de la extensión, para cuando el proveedor no lo manda. */
+function mimeFromName(name: string): string {
+  const ext = name.includes('.') ? name.split('.').pop()?.toLowerCase() : null;
+  const porExt: Record<string, string> = {
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    webp: 'image/webp',
+    gif: 'image/gif',
+    pdf: 'application/pdf',
+    txt: 'text/plain',
+    csv: 'text/csv',
+  };
+  return (ext && porExt[ext]) || 'application/octet-stream';
+}
+
 function packFromMessage(message: MercadolibreMessage): string | null {
   const fromResources = message.message_resources?.find((r) => r.name === 'packs')?.id;
   if (fromResources) return String(fromResources);
@@ -141,6 +186,7 @@ async function insertMessage(input: {
   direction: 'incoming' | 'outgoing';
   senderName: string | null;
   createdAt: string;
+  attachments?: StoredAttachment[];
   log: FastifyBaseLogger;
 }): Promise<boolean> {
   const { error } = await supabase.from('unipile_messages').insert({
@@ -150,6 +196,7 @@ async function insertMessage(input: {
     content: input.content,
     direction: input.direction,
     sender_name: input.senderName,
+    attachments: input.attachments?.length ? input.attachments : null,
     created_at: input.createdAt,
   });
 
@@ -392,7 +439,9 @@ export const mercadolibreWebhookService = {
     if (!packId) return { ok: true, skipped: 'no_pack' };
 
     const text = extractText(message);
-    if (!text) return { ok: true, skipped: 'no_text' };
+    const pendingAttachments = extractAttachments(message);
+    // Una foto sin texto es un mensaje válido; uno sin nada no.
+    if (!text && pendingAttachments.length === 0) return { ok: true, skipped: 'no_text' };
 
     // El nombre del remitente: ML no siempre lo manda. La orden que ya vimos suele
     // tener el nickname del comprador, así que lo reusamos antes de caer al genérico.
@@ -416,6 +465,34 @@ export const mercadolibreWebhookService = {
     const msgAt = messageDate(message);
     const realMessageId = message.id ?? message.message_id ?? messageId;
 
+    // Lo que ve un humano en la bandeja: el texto del comprador, o el nombre del archivo.
+    const contentText =
+      text ||
+      describeForInbox(
+        pendingAttachments.map((a) => ({ kind: kindFromMime(a.mime), name: a.name })),
+      );
+
+    // A diferencia de Unipile y Evolution, acá la ingesta va INLINE: processMessage ya
+    // corre entero en background (el handler ACKea antes de llamarlo), así que no hay
+    // ningún ACK que proteger y el mensaje puede guardarse con sus adjuntos de una.
+    let stored: StoredAttachment[] = [];
+    if (pendingAttachments.length > 0) {
+      const siteId = message.site_id ?? 'MLA';
+      stored = await ingestAttachments(
+        {
+          clientId: inbox.client_id,
+          chatId,
+          messageId: realMessageId,
+          attachments: pendingAttachments,
+          fetchBytes: async (a) => {
+            const token = await mercadolibreService.getValidToken(mlUserId);
+            return mercadolibreApiService.fetchAttachment(a.providerId, siteId, token);
+          },
+        },
+        log,
+      );
+    }
+
     const chatOk = await upsertChat({
       clientId: inbox.client_id,
       chatId,
@@ -424,7 +501,7 @@ export const mercadolibreWebhookService = {
       workflowId: inbox.workflow_id,
       contactName,
       buyerId: message.from?.user_id != null ? String(message.from.user_id) : null,
-      preview: text,
+      preview: contentText,
       messageAt: msgAt,
       isIncoming: true,
       log,
@@ -435,10 +512,11 @@ export const mercadolibreWebhookService = {
       chatId,
       clientId: inbox.client_id,
       messageId: realMessageId,
-      content: text,
+      content: contentText,
       direction: 'incoming',
       senderName: contactName,
       createdAt: msgAt,
+      attachments: stored,
       log,
     });
     if (!isNew) return { ok: true, skipped: 'duplicate' };
@@ -456,7 +534,12 @@ export const mercadolibreWebhookService = {
         ok: true,
         forward: {
           workflowId: chat.workflow_id,
-          payload: { chat_id: chatId, nombre: contactName, question: text },
+          payload: {
+            chat_id: chatId,
+            nombre: contactName,
+            question: contentText,
+            attachments: stored.length > 0 ? await signAttachments(stored, log) : undefined,
+          },
         },
       };
     }

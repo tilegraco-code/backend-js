@@ -81,6 +81,18 @@ export type MercadolibreMessageResource = {
   name: string; // 'packs' | 'sellers' | …
 };
 
+/** Un adjunto de un mensaje. Los bytes se bajan aparte, con el token del vendedor. */
+export type MercadolibreAttachment = {
+  /** Id con el que se pide el archivo; en ML suele tener forma de nombre de archivo. */
+  filename?: string;
+  original_filename?: string;
+  name?: string;
+  id?: string;
+  type?: string;
+  mimetype?: string;
+  size?: number;
+};
+
 export type MercadolibreMessageModeration = {
   status?: string; // clean | rejected | pending | non_moderated
   reason?: string | null;
@@ -112,6 +124,13 @@ export type MercadolibreMessage = {
   date_created?: string;
   message_moderation?: MercadolibreMessageModeration;
   moderation?: MercadolibreMessageModeration;
+  /**
+   * Archivos que mandó el comprador. ML los nombra `message_attachments`, pero se acepta
+   * también `attachments` porque la forma del payload de mensajería cambió entre versiones
+   * y esto no está verificado contra un mensaje real con adjunto.
+   */
+  message_attachments?: MercadolibreAttachment[];
+  attachments?: MercadolibreAttachment[];
   message_resources?: MercadolibreMessageResource[];
   resource?: string;
   resource_id?: string;
