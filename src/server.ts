@@ -30,6 +30,12 @@ export async function buildServer(): Promise<FastifyInstance> {
         : undefined,
     },
     trustProxy: true,
+    // Evolution manda el archivo DENTRO del webhook, no una referencia, así que el body de
+    // un mensaje con foto supera el default de Fastify (1 MB) y se rechazaba con 413 antes
+    // de parsearlo. Evolution reintenta, vuelve a fallar, y el mensaje se pierde: por eso
+    // una imagen por WhatsApp propio no llegaba ni a la bandeja.
+    // 30 MB cubre el tope de WhatsApp con margen para el encoding base64, que infla ~33%.
+    bodyLimit: 30 * 1024 * 1024,
   }).withTypeProvider<ZodTypeProvider>();
 
   app.setValidatorCompiler(validatorCompiler);

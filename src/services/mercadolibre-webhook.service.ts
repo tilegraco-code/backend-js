@@ -486,7 +486,8 @@ export const mercadolibreWebhookService = {
           attachments: pendingAttachments,
           fetchBytes: async (a) => {
             const token = await mercadolibreService.getValidToken(mlUserId);
-            return mercadolibreApiService.fetchAttachment(a.providerId, siteId, token);
+            const bytes = await mercadolibreApiService.fetchAttachment(a.providerId, siteId, token);
+            return { bytes };
           },
         },
         log,
