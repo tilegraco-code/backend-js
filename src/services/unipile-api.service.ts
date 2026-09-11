@@ -58,6 +58,28 @@ export const unipileApiService = {
   },
 
   /**
+   * Baja un adjunto desde la URL que vino en el webhook.
+   *
+   * Plan B para cuando el adjunto no trae `id` y no se puede pedir por el endpoint de
+   * mensajes. Manda la API key igual: algunas de esas URLs son del propio Unipile y la
+   * piden, y a un CDN externo un header de más no le molesta.
+   *
+   * NOTE: no está verificado que la URL del webhook sea descargable en todos los
+   * proveedores. Si acá vuelve basura en vez del archivo, el camino bueno es el del `id`.
+   */
+  async downloadAttachmentUrl(url: string): Promise<Buffer> {
+    if (!url) throw new Error('Adjunto sin id ni url: no hay de dónde bajarlo');
+    const { apiKey } = getCreds();
+
+    const res = await fetch(url, { headers: { 'X-API-KEY': apiKey } });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Unipile downloadAttachmentUrl ${res.status}: ${errText}`);
+    }
+    return Buffer.from(await res.arrayBuffer());
+  },
+
+  /**
    * Desconecta y elimina una cuenta en Unipile. Idempotente desde el punto de
    * vista del CRON: un 404 (cuenta ya inexistente) se trata como éxito.
    */

@@ -46,10 +46,17 @@ export type ForwardAttachment = {
 
 /** Un adjunto anunciado por el proveedor, antes de tener los bytes. */
 export type PendingAttachment = {
-  /** Id del adjunto en el proveedor, para pedirle los bytes. */
+  /** Id del adjunto en el proveedor, para pedirle los bytes. Puede venir vacío. */
   providerId: string;
   mime: string;
   name: string | null;
+  /**
+   * URL directa al archivo, cuando el proveedor la manda.
+   *
+   * Es el plan B para bajarlo: no todos los proveedores mandan un id con el que pedirlo por
+   * API, y exigirlo hacía que el adjunto se descartara sin dejar rastro.
+   */
+  url?: string | null;
 };
 
 /** Cómo conseguir los bytes de UN adjunto. La implementa cada canal. */
