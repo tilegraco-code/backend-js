@@ -18,6 +18,22 @@ const errorResponseSchema = z.object({
   error: z.string(),
 });
 
+/**
+ * String que puede llegar ausente O en null, y sale siempre como string.
+ *
+ * `.default()` de Zod sólo cubre `undefined`: con null tira invalid_type y Fastify responde
+ * 400 ANTES de entrar a la lógica, así que el mensaje se pierde entero. Es exactamente lo que
+ * pasaba con una foto sin epígrafe, que Unipile manda como `message: null`.
+ *
+ * Un webhook no puede rechazar un mensaje por la forma de un campo opcional: del otro lado no
+ * hay nadie que arregle el payload y reintente.
+ */
+const textoTolerante = (porDefecto = '') =>
+  z
+    .string()
+    .nullish()
+    .transform((v) => v ?? porDefecto);
+
 const senderSchema = z.object({
   attendee_id: z.string(),
   attendee_name: z.string(),
@@ -39,10 +55,9 @@ const messageWebhookSchema = z
       .nullish(),
     chat_id: z.string(),
     message_id: z.string(),
-    // Un mensaje de solo adjunto (una foto sin caption) puede no traer el campo.
-    // Sin el default, Zod devolvía 400 y el mensaje se perdía antes de tocar la lógica.
-    message: z.string().optional().default(''),
-    timestamp: z.string(),
+    // Un mensaje de solo adjunto (una foto sin caption) llega con `message: null`.
+    message: textoTolerante(),
+    timestamp: textoTolerante(new Date().toISOString()),
     webhook_name: z.string().optional(),
     is_sender: z.boolean().optional(),
     sender: senderSchema,
@@ -54,13 +69,15 @@ const messageWebhookSchema = z
       .array(
         z
           .object({
-            id: z.string().optional(),
-            type: z.string().optional(),
-            mimetype: z.string().optional(),
-            url: z.string().optional(),
+            // Todo nullish por el mismo motivo que `message`: un solo campo en null tumbaba
+            // el webhook completo, no sólo el adjunto.
+            id: z.string().nullish(),
+            type: z.string().nullish(),
+            mimetype: z.string().nullish(),
+            url: z.string().nullish(),
             file_name: z.string().nullish(),
-            sticker: z.boolean().optional(),
-            unavailable: z.boolean().optional(),
+            sticker: z.boolean().nullish(),
+            unavailable: z.boolean().nullish(),
           })
           .passthrough(),
       )

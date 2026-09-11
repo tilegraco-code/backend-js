@@ -35,14 +35,16 @@ export type UnipileWebhookPayload = {
  * `id` + `message_id`. `unavailable` marca los que el proveedor ya no tiene.
  */
 export type UnipileAttachment = {
-  id?: string;
-  type?: string;
-  mimetype?: string;
-  url?: string;
+  // Todo opcional y nullable: Unipile varía los campos según el proveedor y manda null con
+  // soltura. El schema de la ruta es igual de laxo a propósito — ver `textoTolerante`.
+  id?: string | null;
+  type?: string | null;
+  mimetype?: string | null;
+  url?: string | null;
   file_name?: string | null;
   size?: { width?: number; height?: number } | number | null;
-  sticker?: boolean;
-  unavailable?: boolean;
+  sticker?: boolean | null;
+  unavailable?: boolean | null;
 };
 
 export type UnipileAccountStatusPayload = {
