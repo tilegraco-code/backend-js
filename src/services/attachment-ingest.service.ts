@@ -59,8 +59,15 @@ export type PendingAttachment = {
   url?: string | null;
 };
 
-/** Cómo conseguir los bytes de UN adjunto. La implementa cada canal. */
-export type FetchBytes = (attachment: PendingAttachment) => Promise<Buffer>;
+/**
+ * Cómo conseguir los bytes de UN adjunto. La implementa cada canal.
+ *
+ * Devuelve también el mime cuando el proveedor lo informa AL BAJAR el archivo, que suele
+ * ser más confiable que lo que anuncia el webhook: WhatsApp vía Unipile, por ejemplo, no
+ * manda ningún mime en el webhook y sólo dice "img".
+ */
+export type FetchedBytes = { bytes: Buffer; mime?: string | null };
+export type FetchBytes = (attachment: PendingAttachment) => Promise<FetchedBytes>;
 
 const EXTENSION_BY_MIME: Record<string, string> = {
   'image/jpeg': 'jpg',
@@ -108,6 +115,16 @@ export function describeForInbox(attachments: { kind: AttachmentKind; name: stri
   return rest > 0 ? `[${base} +${rest}]` : `[${base}]`;
 }
 
+/**
+ * Normaliza el content-type de una respuesta HTTP: le saca el charset y descarta los
+ * genéricos, que no dicen nada y taparían un mime mejor venido del webhook.
+ */
+function limpiarMime(raw: string | null | undefined): string | null {
+  const mime = (raw ?? '').split(';')[0]?.trim().toLowerCase();
+  if (!mime || mime === 'application/octet-stream' || mime === 'binary/octet-stream') return null;
+  return mime;
+}
+
 function extensionFor(mime: string, name: string | null): string {
   const fromName = name?.includes('.') ? name.split('.').pop()?.toLowerCase() : null;
   if (fromName && /^[a-z0-9]{1,8}$/.test(fromName)) return fromName;
@@ -152,7 +169,10 @@ export async function ingestAttachments(
 
   for (const [index, attachment] of accepted.entries()) {
     try {
-      const bytes = await fetchBytes(attachment);
+      const bajado = await fetchBytes(attachment);
+      const bytes = bajado.bytes;
+      // El mime de la descarga gana sobre el del webhook, que puede ser un placeholder.
+      const mime = limpiarMime(bajado.mime) ?? attachment.mime;
 
       if (bytes.byteLength === 0) {
         log.warn({ messageId, providerId: attachment.providerId }, 'adjuntos: archivo vacío');
@@ -168,10 +188,10 @@ export async function ingestAttachments(
 
       const path =
         `${clientId}/${slug(chatId)}/${slug(messageId)}/` +
-        `${index}.${extensionFor(attachment.mime, attachment.name)}`;
+        `${index}.${extensionFor(mime, attachment.name)}`;
 
       const { error } = await supabase.storage.from(BUCKET).upload(path, bytes, {
-        contentType: attachment.mime,
+        contentType: mime,
         // Idempotencia: si Unipile reintenta el webhook, se pisa el mismo archivo en
         // vez de acumular copias con nombres distintos.
         upsert: true,
@@ -183,8 +203,8 @@ export async function ingestAttachments(
       }
 
       stored.push({
-        kind: kindFromMime(attachment.mime),
-        mime: attachment.mime,
+        kind: kindFromMime(mime),
+        mime,
         name: attachment.name,
         size: bytes.byteLength,
         path,

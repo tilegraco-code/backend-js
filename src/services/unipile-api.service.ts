@@ -41,7 +41,10 @@ export const unipileApiService = {
    * CDN del proveedor y en WhatsApp llega cifrado, así que no sirve para bajarlo
    * derecho. Acá Unipile lo devuelve ya descifrado.
    */
-  async getMessageAttachment(messageId: string, attachmentId: string): Promise<Buffer> {
+  async getMessageAttachment(
+    messageId: string,
+    attachmentId: string,
+  ): Promise<{ bytes: Buffer; mime: string | null }> {
     const { dsn, apiKey } = getCreds();
     const url =
       `${dsn.replace(/\/$/, '')}/api/v1/messages/${encodeURIComponent(messageId)}` +
@@ -54,7 +57,12 @@ export const unipileApiService = {
       throw new Error(`Unipile getMessageAttachment ${res.status}: ${errText}`);
     }
 
-    return Buffer.from(await res.arrayBuffer());
+    // El webhook de WhatsApp no manda mime (sólo `attachment_type: "img"`), así que el
+    // content-type de esta respuesta es la única fuente real del tipo de archivo.
+    return {
+      bytes: Buffer.from(await res.arrayBuffer()),
+      mime: res.headers.get('content-type'),
+    };
   },
 
   /**
@@ -67,7 +75,7 @@ export const unipileApiService = {
    * NOTE: no está verificado que la URL del webhook sea descargable en todos los
    * proveedores. Si acá vuelve basura en vez del archivo, el camino bueno es el del `id`.
    */
-  async downloadAttachmentUrl(url: string): Promise<Buffer> {
+  async downloadAttachmentUrl(url: string): Promise<{ bytes: Buffer; mime: string | null }> {
     if (!url) throw new Error('Adjunto sin id ni url: no hay de dónde bajarlo');
     const { apiKey } = getCreds();
 
@@ -76,7 +84,10 @@ export const unipileApiService = {
       const errText = await res.text();
       throw new Error(`Unipile downloadAttachmentUrl ${res.status}: ${errText}`);
     }
-    return Buffer.from(await res.arrayBuffer());
+    return {
+      bytes: Buffer.from(await res.arrayBuffer()),
+      mime: res.headers.get('content-type'),
+    };
   },
 
   /**

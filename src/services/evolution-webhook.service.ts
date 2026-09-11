@@ -315,7 +315,7 @@ export const evolutionWebhookService = {
           attachments,
           fetchBytes: async () => {
             const media = await evolutionApiService.getMediaBase64(instance, messageId);
-            return Buffer.from(media.base64, 'base64');
+            return { bytes: Buffer.from(media.base64, 'base64'), mime: media.mimetype };
           },
         },
         log,

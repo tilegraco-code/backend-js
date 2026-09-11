@@ -34,6 +34,26 @@ type PendingIngest = {
   attachments: PendingAttachment[];
 };
 
+/**
+ * Mime provisorio a partir del tipo grueso que manda WhatsApp (`img`, `video`, `audio`…).
+ *
+ * Es un placeholder para clasificar el adjunto antes de bajarlo: el tipo real sale del
+ * content-type de la descarga y pisa a éste.
+ */
+function mimeDesdeTipo(tipo: string | null | undefined): string {
+  switch ((tipo ?? '').toLowerCase()) {
+    case 'img':
+    case 'image':
+      return 'image/jpeg';
+    case 'video':
+      return 'video/mp4';
+    case 'audio':
+      return 'audio/ogg';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
 function resolveAccountStatus(message: string): UnipileAccountStatus | null {
   switch (message.toUpperCase()) {
     case 'CREATION_SUCCESS':
@@ -85,15 +105,21 @@ export const unipileWebhookService = {
     }
 
     // Adjuntos anunciados por el webhook. Los bytes NO vienen acá: se bajan después.
-    // Sirve el `id` (se pide por API) o la `url` directa; exigir el id descartaba en
-    // silencio los adjuntos de los proveedores que no lo mandan.
+    //
+    // WhatsApp manda los campos PREFIJADOS (`attachment_id`, `attachment_type`) y sin mime;
+    // la doc de Unipile documenta los otros nombres. Se leen las dos formas porque un campo
+    // que no matchea no degrada el adjunto: lo hace desaparecer.
     const pendingAttachments: PendingAttachment[] = (payload.attachments ?? [])
-      .filter((a) => (a.id || a.url) && !a.unavailable)
+      .filter((a) => {
+        const noDisponible = a.attachment_unavailable ?? a.unavailable ?? false;
+        return (a.attachment_id || a.id || a.attachment_url || a.url) && !noDisponible;
+      })
       .map((a) => ({
-        providerId: a.id ?? '',
-        mime: a.mimetype || 'application/octet-stream',
+        providerId: a.attachment_id ?? a.id ?? '',
+        // Provisorio: el mime de verdad sale del content-type al bajar el archivo.
+        mime: a.mimetype || mimeDesdeTipo(a.attachment_type ?? a.type),
         name: a.file_name ?? null,
-        url: a.url ?? null,
+        url: a.attachment_url ?? a.url ?? null,
       }));
 
     // Un mensaje sin texto pero con adjunto es un mensaje válido: una foto sin

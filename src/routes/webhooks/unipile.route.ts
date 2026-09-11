@@ -69,8 +69,15 @@ const messageWebhookSchema = z
       .array(
         z
           .object({
-            // Todo nullish por el mismo motivo que `message`: un solo campo en null tumbaba
-            // el webhook completo, no sólo el adjunto.
+            // Los nombres REALES que manda WhatsApp van prefijados (verificado contra un
+            // payload de producción); los de abajo son los que documenta Unipile. Se aceptan
+            // los dos. Todo nullish por el mismo motivo que `message`: un solo campo en null
+            // tumbaba el webhook completo, no sólo el adjunto.
+            attachment_id: z.string().nullish(),
+            attachment_type: z.string().nullish(),
+            attachment_url: z.string().nullish(),
+            attachment_size: z.number().nullish(),
+            attachment_unavailable: z.boolean().nullish(),
             id: z.string().nullish(),
             type: z.string().nullish(),
             mimetype: z.string().nullish(),

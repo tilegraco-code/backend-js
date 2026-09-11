@@ -34,9 +34,26 @@ export type UnipileWebhookPayload = {
  * viene cifrada, así que NO se usa para bajarlo: los bytes se piden por la API con
  * `id` + `message_id`. `unavailable` marca los que el proveedor ya no tiene.
  */
+/**
+ * Adjunto anunciado por el webhook, verificado contra un payload real de WhatsApp:
+ *
+ *   { attachment_id, attachment_type: "img", attachment_url: null,
+ *     attachment_size: 67079, attachment_unavailable: false }
+ *
+ * Los campos van PREFIJADOS, no vienen `id`/`type`/`mimetype` como decía la doc, y `url`
+ * llega en null. Tampoco hay mime ni nombre de archivo: el tipo real sale del content-type
+ * con el que responde el endpoint de adjuntos al bajarlo.
+ *
+ * Se aceptan las dos formas porque el prefijo puede no ser universal entre proveedores, y
+ * un campo que no matchea significa perder el adjunto entero.
+ */
 export type UnipileAttachment = {
-  // Todo opcional y nullable: Unipile varía los campos según el proveedor y manda null con
-  // soltura. El schema de la ruta es igual de laxo a propósito — ver `textoTolerante`.
+  attachment_id?: string | null;
+  attachment_type?: string | null;
+  attachment_url?: string | null;
+  attachment_size?: number | null;
+  attachment_unavailable?: boolean | null;
+  // Forma alternativa (la que documenta Unipile).
   id?: string | null;
   type?: string | null;
   mimetype?: string | null;
