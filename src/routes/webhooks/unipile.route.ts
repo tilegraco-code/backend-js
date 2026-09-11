@@ -39,19 +39,30 @@ const messageWebhookSchema = z
       .nullish(),
     chat_id: z.string(),
     message_id: z.string(),
-    message: z.string(),
+    // Un mensaje de solo adjunto (una foto sin caption) puede no traer el campo.
+    // Sin el default, Zod devolvía 400 y el mensaje se perdía antes de tocar la lógica.
+    message: z.string().optional().default(''),
     timestamp: z.string(),
     webhook_name: z.string().optional(),
     is_sender: z.boolean().optional(),
     sender: senderSchema,
     attendees: z.array(senderSchema).optional(),
+    // Laxo a propósito: Unipile varía los campos según el proveedor (un sticker de
+    // WhatsApp no trae file_name, un adjunto viejo llega con unavailable). Validar
+    // de más acá haría que el webhook rebote con 400 y se perdiera el mensaje entero.
     attachments: z
       .array(
-        z.object({
-          type: z.string(),
-          mimetype: z.string(),
-          url: z.string(),
-        }),
+        z
+          .object({
+            id: z.string().optional(),
+            type: z.string().optional(),
+            mimetype: z.string().optional(),
+            url: z.string().optional(),
+            file_name: z.string().nullish(),
+            sticker: z.boolean().optional(),
+            unavailable: z.boolean().optional(),
+          })
+          .passthrough(),
       )
       .optional(),
   })
@@ -175,13 +186,12 @@ export async function unipileWebhookRoutes(app: FastifyInstance): Promise<void> 
         return reply.status(result.status).send({ error: result.error });
       }
 
-      // Responder a Unipile inmediatamente; el forward a n8n va en background
-      // para no bloquear el ACK del webhook.
-      if (result.forward) {
-        const { workflowId, payload } = result.forward;
+      // Responder a Unipile inmediatamente; la ingesta de adjuntos y el turno del
+      // agente van en background para no bloquear el ACK del webhook.
+      if (result.forward || result.ingest) {
         const log = request.log;
         setImmediate(() => {
-          dispatchToRuntime(payload, workflowId, 'whatsapp', log).catch(() => {
+          unipileWebhookService.runBackground(result, 'whatsapp', log, dispatchToRuntime).catch(() => {
             /* errores ya logueados dentro */
           });
         });

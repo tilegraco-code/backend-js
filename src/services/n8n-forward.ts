@@ -1,5 +1,6 @@
 import { FastifyBaseLogger } from 'fastify';
 import { supabase } from '../lib/supabase';
+import type { ForwardAttachment } from './attachment-ingest.service';
 
 /**
  * Formato ÚNICO que recibe n8n, sin importar el provider (Unipile / Evolution).
@@ -10,6 +11,14 @@ export type N8nForwardPayload = {
   chat_id: string;
   nombre: string;
   question: string;
+  /**
+   * Adjuntos del mensaje, ya en Storage y con URL firmada (ver
+   * attachment-ingest.service). Opcional: los mensajes de solo texto no lo mandan.
+   *
+   * Solo lo consume el runtime LangGraph. n8n lo ignora — el JSON extra no le
+   * molesta y así el envelope sigue siendo uno solo para los dos caminos.
+   */
+  attachments?: ForwardAttachment[];
 };
 
 /**

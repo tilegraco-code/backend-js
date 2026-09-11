@@ -26,7 +26,23 @@ export type UnipileWebhookPayload = {
   is_sender?: boolean;
   sender: UnipileSender;
   attendees?: UnipileSender[];
-  attachments?: { type: string; mimetype: string; url: string }[];
+  attachments?: UnipileAttachment[];
+};
+
+/**
+ * Adjunto anunciado por el webhook. `url` apunta al CDN del proveedor y en WhatsApp
+ * viene cifrada, así que NO se usa para bajarlo: los bytes se piden por la API con
+ * `id` + `message_id`. `unavailable` marca los que el proveedor ya no tiene.
+ */
+export type UnipileAttachment = {
+  id?: string;
+  type?: string;
+  mimetype?: string;
+  url?: string;
+  file_name?: string | null;
+  size?: { width?: number; height?: number } | number | null;
+  sticker?: boolean;
+  unavailable?: boolean;
 };
 
 export type UnipileAccountStatusPayload = {
