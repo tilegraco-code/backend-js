@@ -200,33 +200,54 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // POST /api/agents/run-turn → dispara un turno del agente para un workflow/chat. Lo usa el
-  // "test agent" del dashboard: en vez de postear al webhook de n8n (que no existe para agentes
-  // LangGraph), delega en el backend, que rutea por runtime igual que un webhook de canal real.
-  // La respuesta la persiste `runViaAgent` vía sendOutgoing (para provider TEST solo persiste) →
-  // el UI del test la lee por Realtime. Fire & forget: no bloqueamos el turno completo.
+  // POST /api/agents/run-turn → dispara un turno del agente para un workflow/chat.
+  //
+  // Es la puerta de entrada de los canales que NO tienen webhook de proveedor: el "test agent"
+  // del dashboard y el snippet web. En vez de postear al webhook de n8n (que no existe para
+  // agentes LangGraph), delegan acá y el backend rutea por runtime igual que un webhook real.
+  // La respuesta la persiste `runViaAgent` vía sendOutgoing, que para los providers WEB y TEST
+  // sólo persiste → el UI del test la lee por Realtime y el widget por su polling.
+  // Fire & forget: no bloqueamos el turno completo.
   r.post(
     '/run-turn',
     {
       schema: {
         tags: ['agents'],
-        summary: 'Dispara un turno del agente para un workflow/chat (test del dashboard)',
+        summary: 'Dispara un turno del agente para un workflow/chat (test del dashboard, snippet web)',
         security: [{ InternalToken: [] }],
         body: z.object({
           workflow_id: z.coerce.number().int().positive(),
           chat_id: z.string().min(1),
-          message: z.string().min(1),
+          // Puede venir vacío si el mensaje es sólo un adjunto (una foto sin texto).
+          message: z.string(),
           nombre: z.string().optional(),
+          // De dónde viene el turno. Queda en agentuse.channel, así que 'test' por default
+          // evita que un turno de prueba se cuente como tráfico real.
+          channel: z.string().min(1).optional(),
+          // Adjuntos ya en Storage y firmados por quien llama. Ver attachment-ingest.service.
+          attachments: z
+            .array(
+              z.object({
+                kind: z.enum(['image', 'document', 'audio', 'video', 'other']),
+                mime: z.string(),
+                name: z.string().nullable(),
+                url: z.string(),
+              }),
+            )
+            .optional(),
         }),
-        response: { 200: z.object({ ok: z.boolean() }) },
+        response: { 200: z.object({ ok: z.boolean() }), 400: errorResponseSchema },
       },
     },
     async (request, reply) => {
-      const { workflow_id, chat_id, message, nombre } = request.body;
+      const { workflow_id, chat_id, message, nombre, channel, attachments } = request.body;
+      if (!message && !attachments?.length) {
+        return reply.status(400).send({ error: 'Se necesita message o attachments' });
+      }
       void dispatchToRuntime(
-        { chat_id, question: message, nombre: nombre ?? 'Test' },
+        { chat_id, question: message, nombre: nombre ?? 'Test', attachments },
         workflow_id,
-        'test',
+        channel ?? 'test',
         request.log,
       ).catch((e) => request.log.error({ err: e, workflow_id }, 'run-turn: dispatch falló'));
       return reply.send({ ok: true });

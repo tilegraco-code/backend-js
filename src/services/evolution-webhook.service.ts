@@ -1,8 +1,17 @@
 import { FastifyBaseLogger } from 'fastify';
 import { supabase } from '../lib/supabase';
 import { forwardToN8n, type N8nForwardPayload } from './n8n-forward';
+import { evolutionApiService } from './evolution-api.service';
+import {
+  describeForInbox,
+  ingestAttachments,
+  kindFromMime,
+  signAttachments,
+  type PendingAttachment,
+} from './attachment-ingest.service';
 import type {
   EvolutionConnectionUpdateData,
+  EvolutionMediaMessage,
   EvolutionMessageContent,
   EvolutionMessageUpsertData,
   EvolutionWebhookPayload,
@@ -28,6 +37,37 @@ function extractText(msg: EvolutionMessageContent | null | undefined): string {
     ''
   );
 }
+
+/**
+ * El archivo que trae el mensaje, si trae alguno.
+ *
+ * WhatsApp manda UNO por mensaje, así que devuelve uno solo. Los stickers se dejan
+ * afuera a propósito: son ruido, no una consulta, y describir cada uno costaría tokens
+ * por nada.
+ */
+function extractMedia(msg: EvolutionMessageContent | null | undefined): EvolutionMediaMessage | null {
+  if (!msg) return null;
+  return (
+    msg.imageMessage ??
+    msg.documentMessage ??
+    msg.documentWithCaptionMessage?.message?.documentMessage ??
+    msg.audioMessage ??
+    msg.videoMessage ??
+    null
+  );
+}
+
+/**
+ * Lo que hay que hacer con el archivo DESPUÉS de contestarle a Evolution. Igual que en
+ * Unipile: bajar varios MB no puede colgarse del ACK del webhook.
+ */
+type PendingIngest = {
+  clientId: number;
+  chatId: string;
+  messageId: string;
+  instance: string;
+  attachments: PendingAttachment[];
+};
 
 function parseTimestamp(ts: number | string | undefined): string {
   if (!ts) return new Date().toISOString();
@@ -69,7 +109,12 @@ export const evolutionWebhookService = {
   async processMessage(
     payload: EvolutionWebhookPayload,
     log: FastifyBaseLogger,
-  ): Promise<ProcessResult & { forward?: { workflowId: number; payload: N8nForwardPayload } }> {
+  ): Promise<
+    ProcessResult & {
+      forward?: { workflowId: number; payload: N8nForwardPayload };
+      ingest?: PendingIngest;
+    }
+  > {
     const instance = payload.instance;
     if (!instance) {
       return { ok: true, skipped: 'no_instance' };
@@ -86,9 +131,31 @@ export const evolutionWebhookService = {
     }
 
     const text = extractText(data.message);
-    if (!text) {
+    const media = extractMedia(data.message);
+
+    // Un mensaje sin texto pero con archivo es un mensaje válido: una foto sin caption es
+    // lo más común en WhatsApp. Antes se descartaba acá y se perdía entero.
+    if (!text && !media) {
       return { ok: true, skipped: 'no_text' };
     }
+
+    // Evolution sólo avisa que hay media; los bytes se piden después por el id del mensaje.
+    const pendingAttachments: PendingAttachment[] = media
+      ? [
+          {
+            providerId: data.key.id,
+            mime: media.mimetype || 'application/octet-stream',
+            name: media.fileName ?? null,
+          },
+        ]
+      : [];
+
+    // Lo que ve un humano en la bandeja.
+    const contentText =
+      text ||
+      describeForInbox(
+        pendingAttachments.map((a) => ({ kind: kindFromMime(a.mime), name: a.name })),
+      );
 
     const inbox = await resolveInbox(instance);
     if (!inbox) {
@@ -135,14 +202,14 @@ export const evolutionWebhookService = {
       contact_name: contactName,
       contact_handle: contactHandle,
       contact_avatar_url: null,
-      last_message_preview: text.slice(0, 120),
+      last_message_preview: contentText.slice(0, 120),
       last_message_at: msgAt,
     });
 
     if (insertError) {
       if (insertError.code === '23505') {
         const updatePayload: Record<string, unknown> = {
-          last_message_preview: text.slice(0, 120),
+          last_message_preview: contentText.slice(0, 120),
           last_message_at: msgAt,
           updated_at: new Date().toISOString(),
         };
@@ -171,7 +238,7 @@ export const evolutionWebhookService = {
       chat_id: chatId,
       client_id: clientId,
       message_id: messageId,
-      content: text,
+      content: contentText,
       direction,
       sender_name: isOwn ? null : contactName,
       created_at: msgAt,
@@ -184,6 +251,13 @@ export const evolutionWebhookService = {
       return { ok: false, status: 500, error: 'DB error (message)' };
     }
 
+    // El archivo se baja y se sube en background, ya con el mensaje persistido. Se hace
+    // aunque el chat lo atienda un humano: la bandeja tiene que mostrarlo igual.
+    const ingest: PendingIngest | undefined =
+      isNewMessage && pendingAttachments.length > 0
+        ? { clientId, chatId, messageId, instance, attachments: pendingAttachments }
+        : undefined;
+
     // Decidir forward a n8n (sin ejecutarlo — eso queda en background del caller).
     if (!isOwn && isNewMessage) {
       const { data: chat } = await supabase
@@ -195,19 +269,74 @@ export const evolutionWebhookService = {
       if (chat?.state === 'ia' && chat.workflow_id) {
         return {
           ok: true,
+          ingest,
           forward: {
             workflowId: chat.workflow_id,
             payload: {
               chat_id: chatId,
               nombre: contactName,
-              question: text,
+              question: contentText,
             },
           },
         };
       }
     }
 
-    return { ok: true };
+    return { ok: true, ingest };
+  },
+
+  /**
+   * Todo lo que corre DESPUÉS del ACK del webhook: bajar el archivo, guardarlo y recién
+   * ahí ejecutar el turno del agente.
+   *
+   * El orden importa: si el forward saliera en paralelo con la ingesta, el agente
+   * respondería sobre un mensaje cuyo archivo todavía no existe. Que la ingesta falle no
+   * cancela el turno; el agente contesta sin el adjunto.
+   */
+  async runBackground(
+    result: { forward?: { workflowId: number; payload: N8nForwardPayload }; ingest?: PendingIngest },
+    channel: string,
+    log: FastifyBaseLogger,
+    dispatch: (
+      payload: N8nForwardPayload,
+      workflowId: number,
+      channel: string,
+      log: FastifyBaseLogger,
+    ) => Promise<void>,
+  ): Promise<void> {
+    if (result.ingest) {
+      const { clientId, chatId, messageId, instance, attachments } = result.ingest;
+
+      const stored = await ingestAttachments(
+        {
+          clientId,
+          chatId,
+          messageId,
+          attachments,
+          fetchBytes: async () => {
+            const media = await evolutionApiService.getMediaBase64(instance, messageId);
+            return Buffer.from(media.base64, 'base64');
+          },
+        },
+        log,
+      );
+
+      if (stored.length > 0) {
+        const { error } = await supabase
+          .from('unipile_messages')
+          .update({ attachments: stored })
+          .eq('message_id', messageId);
+        if (error) log.error({ err: error, messageId }, 'adjuntos: update del mensaje falló');
+
+        if (result.forward) {
+          result.forward.payload.attachments = await signAttachments(stored, log);
+        }
+      }
+    }
+
+    if (result.forward) {
+      await dispatch(result.forward.payload, result.forward.workflowId, channel, log);
+    }
   },
 
   /**

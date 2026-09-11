@@ -35,6 +35,29 @@ export const unipileApiService = {
   },
 
   /**
+   * Baja el binario de un adjunto de un mensaje.
+   *
+   * Va por este endpoint y NO por el `url` que viene en el webhook: ese apunta al
+   * CDN del proveedor y en WhatsApp llega cifrado, así que no sirve para bajarlo
+   * derecho. Acá Unipile lo devuelve ya descifrado.
+   */
+  async getMessageAttachment(messageId: string, attachmentId: string): Promise<Buffer> {
+    const { dsn, apiKey } = getCreds();
+    const url =
+      `${dsn.replace(/\/$/, '')}/api/v1/messages/${encodeURIComponent(messageId)}` +
+      `/attachments/${encodeURIComponent(attachmentId)}`;
+
+    const res = await fetch(url, { headers: { 'X-API-KEY': apiKey } });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Unipile getMessageAttachment ${res.status}: ${errText}`);
+    }
+
+    return Buffer.from(await res.arrayBuffer());
+  },
+
+  /**
    * Desconecta y elimina una cuenta en Unipile. Idempotente desde el punto de
    * vista del CRON: un 404 (cuenta ya inexistente) se trata como éxito.
    */

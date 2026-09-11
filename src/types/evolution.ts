@@ -8,13 +8,24 @@ export type EvolutionMessageKey = {
   participant?: string;
 };
 
+/** Lo que comparten los mensajes con archivo adjunto. Los bytes NO vienen acá. */
+export type EvolutionMediaMessage = {
+  caption?: string;
+  mimetype?: string;
+  fileName?: string;
+  fileLength?: number | string;
+};
+
 export type EvolutionMessageContent = {
   conversation?: string;
   extendedTextMessage?: { text?: string };
-  imageMessage?: { caption?: string };
-  videoMessage?: { caption?: string };
-  documentMessage?: { caption?: string; fileName?: string };
-  audioMessage?: Record<string, unknown>;
+  imageMessage?: EvolutionMediaMessage;
+  videoMessage?: EvolutionMediaMessage;
+  documentMessage?: EvolutionMediaMessage;
+  // WhatsApp manda los PDF reenviados como documentWithCaptionMessage, con el
+  // documentMessage real anidado adentro.
+  documentWithCaptionMessage?: { message?: { documentMessage?: EvolutionMediaMessage } };
+  audioMessage?: EvolutionMediaMessage;
   stickerMessage?: Record<string, unknown>;
   buttonsResponseMessage?: { selectedDisplayText?: string };
   listResponseMessage?: { title?: string };

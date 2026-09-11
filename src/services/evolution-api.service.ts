@@ -52,6 +52,46 @@ export const evolutionApiService = {
    * Cierra la sesión de WhatsApp de una instancia. No es bloqueante: puede
    * fallar si la sesión ya estaba cerrada (se ignora el error en el caller).
    */
+  /**
+   * Baja el media de un mensaje. Evolution NO manda los bytes en el webhook: sólo
+   * avisa que el mensaje trae media, y hay que venir a buscarla por el id del mensaje.
+   *
+   * `convertToMp4: false` a propósito: no queremos que transcodifique nada, sólo el
+   * archivo original. Lo que hacemos con él lo decide el runtime.
+   */
+  async getMediaBase64(
+    instanceName: string,
+    messageId: string,
+  ): Promise<{ base64: string; mimetype: string; fileName: string | null }> {
+    const { baseUrl, apiKey } = getCreds();
+    const url = `${baseUrl}/chat/getBase64FromMediaMessage/${encodeURIComponent(instanceName)}`;
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: apiKey },
+      body: JSON.stringify({ message: { key: { id: messageId } }, convertToMp4: false }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Evolution getBase64FromMediaMessage ${res.status}: ${errText}`);
+    }
+
+    const body = (await res.json()) as {
+      base64?: string;
+      mimetype?: string;
+      fileName?: string | null;
+    };
+    if (!body.base64) {
+      throw new Error('Evolution getBase64FromMediaMessage no devolvió base64');
+    }
+    return {
+      base64: body.base64,
+      mimetype: body.mimetype ?? 'application/octet-stream',
+      fileName: body.fileName ?? null,
+    };
+  },
+
   async logoutInstance(instanceName: string): Promise<void> {
     const { baseUrl, apiKey } = getCreds();
     const url = `${baseUrl}/instance/logout/${encodeURIComponent(instanceName)}`;

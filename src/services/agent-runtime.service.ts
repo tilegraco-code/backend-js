@@ -50,6 +50,10 @@ export async function runViaAgent(
         chat_id: payload.chat_id,
         message: payload.question,
         context: { sender_name: payload.nombre, current_date: currentDateAr(), channel },
+        // Adjuntos ya en Storage, con URL firmada de vida corta. El runtime decide
+        // qué hacer con cada uno (ver docs/imagenes-y-documentos-plan.md); acá solo
+        // se pasan. Ausente en los mensajes de solo texto.
+        ...(payload.attachments?.length ? { attachments: payload.attachments } : {}),
       }),
     });
     if (!res.ok) {

@@ -4,6 +4,14 @@ import { supabase } from '../lib/supabase';
 import { getOwnerEmail } from '../lib/owner-email';
 import { sendCapiEvent } from './meta-capi.service';
 import { forwardToN8n, type N8nForwardPayload } from './n8n-forward';
+import { unipileApiService } from './unipile-api.service';
+import {
+  describeForInbox,
+  ingestAttachments,
+  kindFromMime,
+  signAttachments,
+  type PendingAttachment,
+} from './attachment-ingest.service';
 import type {
   UnipileAccountStatus,
   UnipileAccountStatusPayload,
@@ -13,6 +21,18 @@ import type {
 type ProcessResult =
   | { ok: true; skipped?: string }
   | { ok: false; status: number; error: string };
+
+/**
+ * Lo que hay que hacer con los adjuntos DESPUÉS de contestarle a Unipile: bajarlos
+ * del proveedor y subirlos a Storage. Nunca dentro del handler — mover varios MB no
+ * puede colgarse del ACK del webhook.
+ */
+type PendingIngest = {
+  clientId: number;
+  chatId: string;
+  messageId: string;
+  attachments: PendingAttachment[];
+};
 
 function resolveAccountStatus(message: string): UnipileAccountStatus | null {
   switch (message.toUpperCase()) {
@@ -42,16 +62,42 @@ export const unipileWebhookService = {
   async processMessage(
     payload: UnipileWebhookPayload,
     log: FastifyBaseLogger,
-  ): Promise<ProcessResult & { forward?: { workflowId: number; payload: N8nForwardPayload } }> {
+  ): Promise<
+    ProcessResult & {
+      forward?: { workflowId: number; payload: N8nForwardPayload };
+      ingest?: PendingIngest;
+    }
+  > {
     if (payload.event !== 'message_received') {
       return { ok: true, skipped: payload.event };
     }
 
-    if (!payload.message) {
+    const { account_id, account_type, chat_id, message_id, message, timestamp, sender } = payload;
+
+    // Adjuntos anunciados por el webhook. Los bytes NO vienen acá: se bajan después
+    // por la API, ya descifrados (ver unipileApiService.getMessageAttachment).
+    const pendingAttachments: PendingAttachment[] = (payload.attachments ?? [])
+      .filter((a) => a.id && !a.unavailable)
+      .map((a) => ({
+        providerId: a.id as string,
+        mime: a.mimetype || 'application/octet-stream',
+        name: a.file_name ?? null,
+      }));
+
+    // Un mensaje sin texto pero con adjunto es un mensaje válido: una foto sin
+    // caption es lo más común del mundo en WhatsApp. Antes se descartaba acá y se
+    // perdía entero, ni siquiera llegaba a la bandeja.
+    if (!message && pendingAttachments.length === 0) {
       return { ok: true, skipped: 'no_message_content' };
     }
 
-    const { account_id, account_type, chat_id, message_id, message, timestamp, sender } = payload;
+    // Lo que ve un humano en la bandeja. El texto propio manda; si no hay, describe
+    // el adjunto. El contenido del archivo NO va acá: lo extrae el runtime en el turno.
+    const contentText =
+      message ||
+      describeForInbox(
+        pendingAttachments.map((a) => ({ kind: kindFromMime(a.mime), name: a.name })),
+      );
 
     // Resolver client_id real desde unipile_inboxes.account_id (no del path)
     const { data: inbox } = await supabase
@@ -113,14 +159,14 @@ export const unipileWebhookService = {
       contact_name: contact?.attendee_name ?? 'Usuario Desconocido',
       contact_handle: contact?.attendee_provider_id ?? null,
       contact_avatar_url: contact?.attendee_profile_url ?? null,
-      last_message_preview: message.slice(0, 120),
+      last_message_preview: contentText.slice(0, 120),
       last_message_at: msgAt,
     });
 
     if (insertError) {
       if (insertError.code === '23505') {
         const updatePayload: Record<string, unknown> = {
-          last_message_preview: message.slice(0, 120),
+          last_message_preview: contentText.slice(0, 120),
           last_message_at: msgAt,
           updated_at: new Date().toISOString(),
         };
@@ -152,7 +198,7 @@ export const unipileWebhookService = {
       chat_id,
       client_id: clientId,
       message_id,
-      content: message,
+      content: contentText,
       direction,
       sender_name: isOwn ? null : sender.attendee_name,
       created_at: msgAt,
@@ -165,6 +211,14 @@ export const unipileWebhookService = {
       return { ok: false, status: 500, error: 'DB error (message)' };
     }
 
+    // Los adjuntos se bajan y se suben en background, ya con el mensaje persistido.
+    // Se hace aunque el chat esté en manos de un humano o el mensaje sea saliente:
+    // la bandeja tiene que mostrar el archivo igual, no solo cuando contesta la IA.
+    const ingest: PendingIngest | undefined =
+      isNewMessage && pendingAttachments.length > 0
+        ? { clientId, chatId: chat_id, messageId: message_id, attachments: pendingAttachments }
+        : undefined;
+
     // Decidir forward a n8n (sin ejecutarlo — eso queda en background del caller)
     if (!isOwn && isNewMessage) {
       const { data: chat } = await supabase
@@ -176,19 +230,72 @@ export const unipileWebhookService = {
       if (chat?.state === 'ia' && chat.workflow_id) {
         return {
           ok: true,
+          ingest,
           forward: {
             workflowId: chat.workflow_id,
             payload: {
               chat_id,
               nombre: sender.attendee_name,
-              question: message,
+              // Con adjunto y sin caption, `question` queda como el placeholder
+              // (`[imagen]`). Es lo que también se guarda en agentuse, así que la
+              // fila sigue siendo legible en vez de quedar vacía.
+              question: contentText,
             },
           },
         };
       }
     }
 
-    return { ok: true };
+    return { ok: true, ingest };
+  },
+
+  /**
+   * Todo lo que corre DESPUÉS del ACK del webhook: bajar los adjuntos, guardarlos y
+   * recién ahí ejecutar el turno del agente.
+   *
+   * El orden importa. El agente tiene que recibir las URLs firmadas en el mismo
+   * turno en que llegó la imagen; si el forward saliera en paralelo con la ingesta,
+   * llegaría con las manos vacías y respondería sobre un mensaje que no vio.
+   *
+   * Que la ingesta falle no cancela el turno: el agente contesta igual, sin el
+   * adjunto. Una respuesta parcial es mejor que el silencio.
+   */
+  async runBackground(
+    result: { forward?: { workflowId: number; payload: N8nForwardPayload }; ingest?: PendingIngest },
+    channel: string,
+    log: FastifyBaseLogger,
+    dispatch: (payload: N8nForwardPayload, workflowId: number, channel: string, log: FastifyBaseLogger) => Promise<void>,
+  ): Promise<void> {
+    if (result.ingest) {
+      const { clientId, chatId, messageId, attachments } = result.ingest;
+
+      const stored = await ingestAttachments(
+        {
+          clientId,
+          chatId,
+          messageId,
+          attachments,
+          fetchBytes: (a) => unipileApiService.getMessageAttachment(messageId, a.providerId),
+        },
+        log,
+      );
+
+      if (stored.length > 0) {
+        const { error } = await supabase
+          .from('unipile_messages')
+          .update({ attachments: stored })
+          .eq('message_id', messageId);
+        if (error) log.error({ err: error, messageId }, 'adjuntos: update del mensaje falló');
+
+        if (result.forward) {
+          result.forward.payload.attachments = await signAttachments(stored, log);
+        }
+      }
+    }
+
+    if (result.forward) {
+      await dispatch(result.forward.payload, result.forward.workflowId, channel, log);
+    }
   },
 
   /**

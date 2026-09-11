@@ -185,6 +185,33 @@ export const mercadolibreApiService = {
    * una conversación entera. Devolvemos siempre el mensaje plano para que los
    * callers no tengan que saber en cuál de las dos está la API hoy.
    */
+  /**
+   * Baja el binario de un adjunto de un mensaje post-venta.
+   *
+   * NO usa el helper `get`: ese parsea JSON y acá vuelve el archivo crudo.
+   *
+   * NOTE: sin verificar contra un payload real. Los docs de mensajería de ML no son
+   * accesibles sin sesión, así que el path y los query params salen de la doc pública de
+   * global selling. Si falla, el error queda en el log y el mensaje se procesa igual como
+   * texto: un adjunto que no se pudo bajar nunca tumba la conversación.
+   */
+  async fetchAttachment(attachmentId: string, siteId: string, token: string): Promise<Buffer> {
+    const path =
+      `/messages/attachments/${encodeURIComponent(attachmentId)}` +
+      `?tag=post_sale&site_id=${encodeURIComponent(siteId)}`;
+
+    const res = await fetch(`${API_BASE}${path}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new MercadolibreApiError(res.status, errText, `MercadoLibre GET ${path} ${res.status}`);
+    }
+
+    return Buffer.from(await res.arrayBuffer());
+  },
+
   async fetchMessage(messageId: string, token: string): Promise<MercadolibreMessage> {
     const raw = await get<MercadolibreMessage & MercadolibreConversation>(
       `/messages/${encodeURIComponent(messageId)}?tag=post_sale`,
