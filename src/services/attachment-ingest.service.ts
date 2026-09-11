@@ -99,20 +99,28 @@ export function kindFromMime(mime: string): AttachmentKind {
   return 'other';
 }
 
-/** Placeholder legible para la bandeja cuando el mensaje no trae texto propio. */
+/**
+ * Texto del mensaje cuando el cliente mandó un archivo sin escribir nada.
+ *
+ * Es lo que se lee en la bandeja y lo que queda en `content`, así que se redacta como una
+ * frase y no como una etiqueta de sistema: "Imagen recibida: foto.jpg" en vez de "[imagen]".
+ *
+ * El género acompaña al sustantivo (imagen recibidA, documento recibidO), por eso la frase
+ * entera está en la tabla y no se arma pegando una palabra fija.
+ */
 export function describeForInbox(attachments: { kind: AttachmentKind; name: string | null }[]): string {
   if (attachments.length === 0) return '';
   const label: Record<AttachmentKind, string> = {
-    image: 'imagen',
-    document: 'documento',
-    audio: 'audio',
-    video: 'video',
-    other: 'archivo',
+    image: 'Imagen recibida',
+    document: 'Documento recibido',
+    audio: 'Audio recibido',
+    video: 'Video recibido',
+    other: 'Archivo recibido',
   };
   const first = attachments[0];
   const base = first.name ? `${label[first.kind]}: ${first.name}` : label[first.kind];
   const rest = attachments.length - 1;
-  return rest > 0 ? `[${base} +${rest}]` : `[${base}]`;
+  return rest > 0 ? `${base} (+${rest})` : base;
 }
 
 /**
