@@ -79,8 +79,12 @@ const EXTENSION_BY_MIME: Record<string, string> = {
   'text/plain': 'txt',
   'text/csv': 'csv',
   'audio/ogg': 'ogg',
+  'audio/opus': 'ogg',
   'audio/mpeg': 'mp3',
   'audio/mp4': 'm4a',
+  'audio/x-m4a': 'm4a',
+  'audio/wav': 'wav',
+  'audio/webm': 'webm',
   'video/mp4': 'mp4',
 };
 
@@ -180,7 +184,9 @@ export async function ingestAttachments(
       const bajado = await fetchBytes(attachment);
       const bytes = bajado.bytes;
       // El mime de la descarga gana sobre el del webhook, que puede ser un placeholder.
-      const mime = limpiarMime(bajado.mime) ?? attachment.mime;
+      // Se normalizan los dos: WhatsApp manda las notas de voz como "audio/ogg; codecs=opus"
+      // y ese parámetro rompe la búsqueda por extensión.
+      const mime = limpiarMime(bajado.mime) ?? limpiarMime(attachment.mime) ?? attachment.mime;
 
       if (bytes.byteLength === 0) {
         log.warn({ messageId, providerId: attachment.providerId }, 'adjuntos: archivo vacío');
