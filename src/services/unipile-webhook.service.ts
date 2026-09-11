@@ -74,20 +74,39 @@ export const unipileWebhookService = {
 
     const { account_id, account_type, chat_id, message_id, message, timestamp, sender } = payload;
 
-    // Adjuntos anunciados por el webhook. Los bytes NO vienen acá: se bajan después
-    // por la API, ya descifrados (ver unipileApiService.getMessageAttachment).
+    // La forma exacta de los adjuntos de Unipile varía por proveedor y no está documentada
+    // al detalle, así que se loguea cruda: es la única manera de saber por qué se descartó
+    // uno sin tener que adivinar dos veces.
+    if (payload.attachments?.length) {
+      log.info(
+        { message_id, attachments: payload.attachments },
+        'unipile: mensaje con adjuntos (payload crudo)',
+      );
+    }
+
+    // Adjuntos anunciados por el webhook. Los bytes NO vienen acá: se bajan después.
+    // Sirve el `id` (se pide por API) o la `url` directa; exigir el id descartaba en
+    // silencio los adjuntos de los proveedores que no lo mandan.
     const pendingAttachments: PendingAttachment[] = (payload.attachments ?? [])
-      .filter((a) => a.id && !a.unavailable)
+      .filter((a) => (a.id || a.url) && !a.unavailable)
       .map((a) => ({
-        providerId: a.id as string,
+        providerId: a.id ?? '',
         mime: a.mimetype || 'application/octet-stream',
         name: a.file_name ?? null,
+        url: a.url ?? null,
       }));
 
     // Un mensaje sin texto pero con adjunto es un mensaje válido: una foto sin
     // caption es lo más común del mundo en WhatsApp. Antes se descartaba acá y se
     // perdía entero, ni siquiera llegaba a la bandeja.
     if (!message && pendingAttachments.length === 0) {
+      // Con adjuntos crudos pero ninguno utilizable, el descarte es un síntoma, no rutina.
+      if (payload.attachments?.length) {
+        log.warn(
+          { message_id, attachments: payload.attachments },
+          'unipile: mensaje descartado pese a traer adjuntos — ninguno tenía id ni url',
+        );
+      }
       return { ok: true, skipped: 'no_message_content' };
     }
 
@@ -275,7 +294,10 @@ export const unipileWebhookService = {
           chatId,
           messageId,
           attachments,
-          fetchBytes: (a) => unipileApiService.getMessageAttachment(messageId, a.providerId),
+          fetchBytes: (a) =>
+            a.providerId
+              ? unipileApiService.getMessageAttachment(messageId, a.providerId)
+              : unipileApiService.downloadAttachmentUrl(a.url ?? ''),
         },
         log,
       );
