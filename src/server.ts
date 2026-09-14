@@ -10,25 +10,11 @@ import {
   ZodTypeProvider,
 } from 'fastify-type-provider-zod';
 import { registerRoutes } from './routes';
+import { buildLoggerOptions } from './lib/logger';
 
 export async function buildServer(): Promise<FastifyInstance> {
-  const usePretty = process.env.LOG_PRETTY !== 'false';
-
   const app = Fastify({
-    logger: {
-      level: process.env.LOG_LEVEL ?? 'info',
-      transport: usePretty
-        ? {
-            target: 'pino-pretty',
-            options: {
-              colorize: true,
-              translateTime: 'HH:MM:ss Z',
-              ignore: 'pid,hostname',
-              singleLine: false,
-            },
-          }
-        : undefined,
-    },
+    logger: buildLoggerOptions(),
     trustProxy: true,
     // Evolution manda el archivo DENTRO del webhook, no una referencia, así que el body de
     // un mensaje con foto supera el default de Fastify (1 MB) y se rechazaba con 413 antes

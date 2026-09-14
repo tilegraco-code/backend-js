@@ -6,6 +6,7 @@ import { registerAccountLifecycleJob } from './account-lifecycle.job';
 import { registerUsageBillingJob } from './usage-billing.job';
 import { registerLearningsJob } from './learnings.job';
 import { registerTokenBackfillJob } from './usage-tokens.job';
+import { registerMercadolibreQuestionsPollJob } from './mercadolibre-questions-poll.job';
 
 let tasks: ScheduledTask[] = [];
 
@@ -22,6 +23,7 @@ export function startJobs(log: FastifyBaseLogger): void {
     registerUsageBillingJob(log),
     registerLearningsJob(log),
     registerTokenBackfillJob(log),
+    registerMercadolibreQuestionsPollJob(log),
   ];
   log.info({ count: tasks.length }, 'Cron jobs iniciados');
 }

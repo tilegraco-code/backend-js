@@ -186,6 +186,27 @@ export const mercadolibreApiService = {
   },
 
   /**
+   * Preguntas SIN responder de un vendedor, más nuevas primero. Lo usa el polling de
+   * respaldo para las notificaciones que ML no logró entregarnos.
+   */
+  async searchUnansweredQuestions(
+    sellerId: number | string,
+    token: string,
+    limit = 50,
+  ): Promise<MercadolibreQuestion[]> {
+    const params = new URLSearchParams({
+      seller_id: String(sellerId),
+      status: 'UNANSWERED',
+      api_version: '4',
+      sort_fields: 'date_created',
+      sort_types: 'DESC',
+      limit: String(limit),
+    });
+    const res = await get<{ questions?: MercadolibreQuestion[] }>(`/questions/search?${params}`, token);
+    return res.questions ?? [];
+  },
+
+  /**
    * Publica la respuesta a una pregunta. Solo funciona con la pregunta en
    * UNANSWERED: si el vendedor la contestó desde ML mientras el agente pensaba,
    * ML responde 400 y el caller lo trata como "ya respondida".

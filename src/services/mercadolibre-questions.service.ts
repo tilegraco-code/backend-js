@@ -223,6 +223,12 @@ async function resolveAutoAnswer(
   };
 }
 
+/**
+ * Cuánto hacia atrás mira el polling, como tope. El piso real es la conexión (sin
+ * historial), pero una cuenta conectada hace meses no tiene por qué revisar todo.
+ */
+const POLL_MAX_LOOKBACK_MS = 24 * 60 * 60_000;
+
 // ---------- SERVICIO ----------
 
 export const mercadolibreQuestionsService = {
@@ -436,6 +442,84 @@ export const mercadolibreQuestionsService = {
 
     log.info({ questionId, itemId: question.item_id }, 'mercadolibre: pregunta respondida por el agente');
     return { ok: true, status: 'answered' };
+  },
+
+  /**
+   * Respaldo de las notificaciones. ML reintenta una notificación fallida 5 veces y
+   * después la descarta: si en ese rato el backend no respondió (reinicio, red, carga),
+   * la pregunta no llega nunca. Este barrido busca en ML las preguntas sin responder de
+   * cada cuenta con respuestas automáticas activas y procesa las que no conocemos.
+   *
+   * Solo las que NO están en la tabla: una que ya vimos tiene su propio estado
+   * (auto_off, needs_human, failed) y reprocesarla sería contestar lo que se decidió no
+   * contestar. Piso: la conexión de la cuenta (sin historial), con tope de 24 h.
+   *
+   * Si la notificación llega en paralelo, no hay doble respuesta: el insert choca (23505)
+   * y el claim atómico deja pasar a uno solo.
+   */
+  async pollUnanswered(log: FastifyBaseLogger): Promise<{ accounts: number; found: number }> {
+    const { data: rows, error } = await supabase
+      .from('mercadolibre_settings')
+      .select('client_id, ml_user_id')
+      .eq('questions_enabled', true)
+      .not('questions_workflow_id', 'is', null);
+    if (error) throw error;
+
+    let accounts = 0;
+    let found = 0;
+
+    for (const s of (rows ?? []) as { client_id: number; ml_user_id: number }[]) {
+      const conn = await mercadolibreService.getConnection(s.ml_user_id);
+      // Sin conexión (cortada) o conectada a otro cliente: nada que barrer.
+      if (!conn || conn.client_id !== s.client_id) continue;
+      accounts += 1;
+
+      const floor = Math.max(Date.parse(conn.connected_at), Date.now() - POLL_MAX_LOOKBACK_MS);
+
+      let questions: MercadolibreQuestion[];
+      try {
+        const token = await mercadolibreService.getValidToken(s.ml_user_id);
+        questions = await mercadolibreApiService.searchUnansweredQuestions(s.ml_user_id, token);
+      } catch (err) {
+        log.error({ err, mlUserId: s.ml_user_id }, 'mercadolibre poll: no se pudieron listar las preguntas');
+        continue;
+      }
+
+      const recientes = questions.filter((q) => {
+        const t = q.date_created ? Date.parse(q.date_created) : NaN;
+        return Number.isFinite(t) && t >= floor;
+      });
+      if (!recientes.length) continue;
+
+      const { data: conocidas } = await supabase
+        .from('mercadolibre_questions')
+        .select('question_id')
+        .in('question_id', recientes.map((q) => q.id));
+      const vistas = new Set((conocidas ?? []).map((r) => Number(r.question_id)));
+      const nuevas = recientes.filter((q) => !vistas.has(Number(q.id)));
+
+      // En serie y más viejas primero: responde en el orden en que preguntaron y no
+      // dispara N turnos del agente a la vez.
+      for (const q of nuevas.reverse()) {
+        found += 1;
+        log.warn(
+          { questionId: q.id, mlUserId: s.ml_user_id, askedAt: q.date_created },
+          'mercadolibre poll: pregunta sin notificación, se procesa por polling',
+        );
+        const result = await this.processQuestion(
+          { resource: `/questions/${q.id}`, user_id: s.ml_user_id, topic: 'questions' },
+          log,
+        ).catch((err) => {
+          log.error({ err, questionId: q.id }, 'mercadolibre poll: processQuestion falló');
+          return null;
+        });
+        if (result && !result.ok) {
+          log.error({ questionId: q.id, error: result.error }, 'mercadolibre poll: pregunta NO procesada');
+        }
+      }
+    }
+
+    return { accounts, found };
   },
 
   /**

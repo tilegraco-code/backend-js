@@ -160,6 +160,12 @@ export const mercadolibreService = {
     refreshToken: string;
     expiresIn: number;
     scope: string | null;
+    /**
+     * true en la renovación del token: NO toca `connected_at`, que tiene que seguir siendo
+     * la fecha del OAuth. El polling de preguntas la usa como piso ("sin historial"), y si
+     * se pisara en cada refresh (~6 h) el piso se correría solo.
+     */
+    isRefresh?: boolean;
   }): Promise<void> {
     const now = new Date();
     const { error } = await supabase.from('mercadolibre_connections').upsert(
@@ -172,7 +178,7 @@ export const mercadolibreService = {
         refresh_token: input.refreshToken,
         expires_at: new Date(now.getTime() + input.expiresIn * 1000).toISOString(),
         scope: input.scope,
-        connected_at: now.toISOString(),
+        ...(input.isRefresh ? {} : { connected_at: now.toISOString() }),
         updated_at: now.toISOString(),
       },
       { onConflict: 'ml_user_id' },
@@ -244,6 +250,7 @@ export const mercadolibreService = {
         refreshToken: token.refresh_token,
         expiresIn: token.expires_in,
         scope: token.scope ?? conn.scope,
+        isRefresh: true,
       });
       return token.access_token;
     })().finally(() => refreshLocks.delete(mlUserId));
