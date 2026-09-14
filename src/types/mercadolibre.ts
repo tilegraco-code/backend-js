@@ -150,6 +150,74 @@ export type MercadolibreConversation = {
   buyer_max_message_length?: number;
 };
 
+// ---------- Preguntas ----------
+
+/**
+ * Estado de una pregunta en ML. Solo `UNANSWERED` admite respuesta; `UNDER_REVIEW`
+ * está en moderación y puede volver a UNANSWERED o terminar BANNED.
+ */
+export type MercadolibreQuestionStatus =
+  | 'UNANSWERED'
+  | 'ANSWERED'
+  | 'CLOSED_UNANSWERED'
+  | 'UNDER_REVIEW'
+  | 'BANNED'
+  | 'DELETED'
+  | 'DISABLED'
+  | string;
+
+/**
+ * Subset de GET /questions/{id}?api_version=4.
+ *
+ * OJO con el comprador: la consulta por id lo trae como `buyer_id` en la raíz, y
+ * `/questions/search` como `from: { id }`. Aceptamos las dos formas (ver buyerIdOf).
+ * El nickname no viene en ninguna: sale de /users/{id}.
+ *
+ * Una pregunta o respuesta BANNED llega con `text` vacío.
+ */
+export type MercadolibreQuestion = {
+  id: number;
+  seller_id?: number;
+  buyer_id?: number;
+  item_id: string;
+  text: string;
+  status: MercadolibreQuestionStatus;
+  date_created?: string;
+  last_updated?: string;
+  deleted_from_listing?: boolean;
+  suspected_spam?: boolean;
+  hold?: boolean;
+  from?: { id?: number };
+  /** `status` de la respuesta: active | disabled | BANNED. */
+  answer?: { text?: string; status?: string; date_created?: string } | null;
+  [key: string]: unknown;
+};
+
+// ---------- Publicaciones ----------
+
+/** Subset de GET /items/{id}: lo que le sirve al agente para responder. */
+export type MercadolibreItem = {
+  id: string;
+  title?: string;
+  price?: number;
+  currency_id?: string;
+  available_quantity?: number;
+  condition?: string;
+  permalink?: string;
+  thumbnail?: string;
+  secure_thumbnail?: string;
+  status?: string;
+  warranty?: string | null;
+  shipping?: { free_shipping?: boolean; local_pick_up?: boolean };
+  attributes?: { id?: string; name?: string; value_name?: string | null }[];
+  variations?: {
+    id?: number;
+    available_quantity?: number;
+    attribute_combinations?: { name?: string; value_name?: string | null }[];
+  }[];
+  [key: string]: unknown;
+};
+
 // ---------- Action guide ----------
 
 export type MercadolibreActionGuideOption = {

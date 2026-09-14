@@ -4,8 +4,10 @@
 import type {
   MercadolibreActionGuide,
   MercadolibreConversation,
+  MercadolibreItem,
   MercadolibreMessage,
   MercadolibreOrder,
+  MercadolibreQuestion,
   MercadolibreTokenResponse,
   MercadolibreUser,
 } from '../types/mercadolibre';
@@ -15,6 +17,9 @@ const TOKEN_URL = `${API_BASE}/oauth/token`;
 
 /** Tope duro de ML para un mensaje del vendedor. Excederlo es un 400. */
 export const MAX_MESSAGE_LENGTH = 350;
+
+/** Tope de ML para la respuesta a una pregunta de una publicación. */
+export const MAX_ANSWER_LENGTH = 2000;
 
 /**
  * Destinatario por defecto cuando no hay ningún entrante del que deducirlo.
@@ -173,6 +178,38 @@ export const mercadolibreApiService = {
 
   async fetchOrder(orderId: number | string, token: string): Promise<MercadolibreOrder> {
     return get<MercadolibreOrder>(`/orders/${orderId}`, token);
+  },
+
+  /** Una pregunta por id. `api_version=4` es la forma vigente (from solo con id). */
+  async fetchQuestion(questionId: number | string, token: string): Promise<MercadolibreQuestion> {
+    return get<MercadolibreQuestion>(`/questions/${questionId}?api_version=4`, token);
+  },
+
+  /**
+   * Publica la respuesta a una pregunta. Solo funciona con la pregunta en
+   * UNANSWERED: si el vendedor la contestó desde ML mientras el agente pensaba,
+   * ML responde 400 y el caller lo trata como "ya respondida".
+   */
+  async postAnswer(questionId: number | string, token: string, text: string): Promise<unknown> {
+    return post<unknown>('/answers', token, { question_id: Number(questionId), text });
+  },
+
+  async fetchItem(itemId: string, token: string): Promise<MercadolibreItem> {
+    return get<MercadolibreItem>(`/items/${encodeURIComponent(itemId)}`, token);
+  },
+
+  /** Descripción larga de la publicación. Muchas no tienen: el caller tolera el 404. */
+  async fetchItemDescription(itemId: string, token: string): Promise<string | null> {
+    const d = await get<{ plain_text?: string }>(
+      `/items/${encodeURIComponent(itemId)}/description`,
+      token,
+    );
+    return d.plain_text?.trim() || null;
+  },
+
+  /** Perfil público de un usuario: lo usamos solo por el nickname del comprador. */
+  async fetchUser(userId: number | string, token: string): Promise<MercadolibreUser> {
+    return get<MercadolibreUser>(`/users/${userId}`, token);
   },
 
   /**

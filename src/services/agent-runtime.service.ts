@@ -7,7 +7,7 @@ import { supabase } from '../lib/supabase';
 import { outgoingMessageService } from './outgoing-message.service';
 import { forwardToN8n, N8nForwardPayload } from './n8n-forward';
 
-type InvokeResponse = {
+export type InvokeResponse = {
   response?: string | null;
   escalated?: boolean;
   escalation_reason?: string | null;
@@ -23,6 +23,94 @@ function currentDateAr(): string {
 }
 
 /**
+ * Solo la llamada a agente-tilegra, sin side-effects. Devuelve null si el runtime no
+ * está configurado o falló (ya logueado).
+ *
+ * `extraContext` se mezcla con el contexto base (fecha, contacto, canal). Lo usan los
+ * canales que no son un chat, como las preguntas de ML, para pasar `instructions`.
+ */
+export async function invokeAgent(
+  input: {
+    agentId: number;
+    chatId: string;
+    message: string;
+    senderName: string;
+    channel: string;
+    attachments?: N8nForwardPayload['attachments'];
+    extraContext?: Record<string, unknown>;
+  },
+  log: FastifyBaseLogger,
+): Promise<InvokeResponse | null> {
+  const url = process.env.AGENT_RUNTIME_URL;
+  const internalKey = process.env.INTERNAL_API_KEY ?? '';
+  if (!url) {
+    log.warn('AGENT_RUNTIME_URL no configurado — no puedo ejecutar el flujo LangGraph');
+    return null;
+  }
+
+  try {
+    const res = await fetch(`${url.replace(/\/$/, '')}/invoke`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${internalKey}` },
+      body: JSON.stringify({
+        agent_id: input.agentId,
+        chat_id: input.chatId,
+        message: input.message,
+        context: {
+          sender_name: input.senderName,
+          current_date: currentDateAr(),
+          channel: input.channel,
+          ...input.extraContext,
+        },
+        // Adjuntos ya en Storage, con URL firmada de vida corta. El runtime decide
+        // qué hacer con cada uno (ver docs/imagenes-y-documentos-plan.md); acá solo
+        // se pasan. Ausente en los mensajes de solo texto.
+        ...(input.attachments?.length ? { attachments: input.attachments } : {}),
+      }),
+    });
+    if (!res.ok) {
+      log.error({ status: res.status, agentId: input.agentId }, 'agente-tilegra /invoke no-2xx');
+      return null;
+    }
+    return (await res.json()) as InvokeResponse;
+  } catch (e) {
+    log.error({ err: e, agentId: input.agentId }, 'agente-tilegra /invoke error');
+    return null;
+  }
+}
+
+/**
+ * agentuse — con los tokens INLINE (no necesita el backfill). Separamos el input
+ * cacheado del no cacheado para que el costo real sea calculable
+ * (input*0.25/M + input_cached*0.025/M + output*2/M). Cada fila cuenta como un uso.
+ */
+export async function recordAgentUse(
+  input: {
+    agentId: number;
+    clientId: number;
+    channel: string;
+    question: string;
+    response: string;
+    usage?: InvokeResponse['usage'];
+  },
+  log: FastifyBaseLogger,
+): Promise<void> {
+  const usage = input.usage ?? {};
+  const { error } = await supabase.from('agentuse').insert({
+    agent_id: input.agentId,
+    client_id: input.clientId,
+    channel: input.channel,
+    question: input.question,
+    response: input.response,
+    input_tokens: usage.input_tokens ?? 0,
+    input_cached_tokens: usage.input_cached_tokens ?? 0,
+    output_tokens: usage.output_tokens ?? 0,
+    tokens_synced: true,
+  });
+  if (error) log.error({ useErr: error, agentId: input.agentId }, 'agentuse insert falló');
+}
+
+/**
  * Ejecuta el turno vía agente-tilegra y se hace cargo de los side-effects.
  */
 export async function runViaAgent(
@@ -32,39 +120,19 @@ export async function runViaAgent(
   channel: string,
   log: FastifyBaseLogger,
 ): Promise<void> {
-  const url = process.env.AGENT_RUNTIME_URL;
-  const internalKey = process.env.INTERNAL_API_KEY ?? '';
-  if (!url) {
-    log.warn('AGENT_RUNTIME_URL no configurado — no puedo ejecutar el flujo LangGraph');
-    return;
-  }
-
   // 1. Invocar al agente (caja negra).
-  let result: InvokeResponse;
-  try {
-    const res = await fetch(`${url.replace(/\/$/, '')}/invoke`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${internalKey}` },
-      body: JSON.stringify({
-        agent_id: agentId,
-        chat_id: payload.chat_id,
-        message: payload.question,
-        context: { sender_name: payload.nombre, current_date: currentDateAr(), channel },
-        // Adjuntos ya en Storage, con URL firmada de vida corta. El runtime decide
-        // qué hacer con cada uno (ver docs/imagenes-y-documentos-plan.md); acá solo
-        // se pasan. Ausente en los mensajes de solo texto.
-        ...(payload.attachments?.length ? { attachments: payload.attachments } : {}),
-      }),
-    });
-    if (!res.ok) {
-      log.error({ status: res.status, agentId }, 'agente-tilegra /invoke no-2xx');
-      return;
-    }
-    result = (await res.json()) as InvokeResponse;
-  } catch (e) {
-    log.error({ err: e, agentId }, 'agente-tilegra /invoke error');
-    return;
-  }
+  const result = await invokeAgent(
+    {
+      agentId,
+      chatId: payload.chat_id,
+      message: payload.question,
+      senderName: payload.nombre,
+      channel,
+      attachments: payload.attachments,
+    },
+    log,
+  );
+  if (!result) return;
 
   // Debounce descartó este turno (llegó un mensaje más nuevo).
   if (result.skipped) return;
@@ -80,26 +148,16 @@ export async function runViaAgent(
     if (!sent.ok) log.error({ agentId, chatId: payload.chat_id, err: sent.error }, 'envío falló');
   }
 
-  // 3. agentuse — con los tokens INLINE (no necesita el backfill). Separamos el input
-  // cacheado del no cacheado para que el costo real sea calculable
-  // (input*0.25/M + input_cached*0.025/M + output*2/M).
-  const usage = result.usage ?? {};
-  const { error: useErr } = await supabase.from('agentuse').insert({
-    agent_id: agentId,
-    client_id: clientId,
-    channel,
-    question: payload.question,
-    response,
-    input_tokens: usage.input_tokens ?? 0,
-    input_cached_tokens: usage.input_cached_tokens ?? 0,
-    output_tokens: usage.output_tokens ?? 0,
-    tokens_synced: true,
-  });
-  if (useErr) log.error({ useErr, agentId }, 'agentuse insert falló');
+  // 3. agentuse.
+  await recordAgentUse(
+    { agentId, clientId, channel, question: payload.question, response, usage: result.usage },
+    log,
+  );
 
   // 4. Escalación (si el agente decidió pasar a humano) — reusa el /api/escalate del dashboard.
   if (result.escalated) {
     const dashboardUrl = process.env.DASHBOARD_URL;
+    const internalKey = process.env.INTERNAL_API_KEY ?? '';
     if (dashboardUrl) {
       try {
         await fetch(`${dashboardUrl.replace(/\/$/, '')}/api/escalate`, {
