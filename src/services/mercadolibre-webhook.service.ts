@@ -36,8 +36,6 @@ type ResolvedInbox = {
   client_id: number;
   workflow_id: number | null;
   suspended: boolean | null;
-  ml_sale_enabled: boolean | null;
-  ml_sale_template: string | null;
 };
 
 // ---------- HELPERS ----------
@@ -118,7 +116,7 @@ function buildChatId(mlUserId: number, packId: string): string {
 async function resolveInbox(mlUserId: number): Promise<ResolvedInbox | null> {
   const { data } = await supabase
     .from('unipile_inboxes')
-    .select('id, client_id, workflow_id, suspended, ml_sale_enabled, ml_sale_template')
+    .select('id, client_id, workflow_id, suspended')
     .eq('account_id', String(mlUserId))
     .eq('source', 'mercadolibre')
     .maybeSingle();
@@ -274,13 +272,15 @@ export const mercadolibreWebhookService = {
     }
 
     if (order.status !== 'paid') return { ok: true, skipped: `status:${order.status}` };
+
+    const settings = await mercadolibreService.getSettings(inbox.client_id, mlUserId);
     // Dos condiciones separadas a propósito: el cliente puede apagar el aviso sin
     // perder la plantilla que eligió.
-    if (inbox.ml_sale_enabled !== true) return { ok: true, skipped: 'sale_message_off' };
-    if (!inbox.ml_sale_template) return { ok: true, skipped: 'no_template' };
+    if (!settings.sale_enabled) return { ok: true, skipped: 'sale_message_off' };
+    if (!settings.sale_template) return { ok: true, skipped: 'no_template' };
 
     const body = prepareText(
-      renderSaleTemplate(inbox.ml_sale_template, {
+      renderSaleTemplate(settings.sale_template, {
         comprador: buyerName,
         producto: firstItem,
         orden: String(order.id),

@@ -3,6 +3,7 @@ import { FastifyInstance } from 'fastify';
 import { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { mercadolibreWebhookService } from '../../services/mercadolibre-webhook.service';
+import { mercadolibreQuestionsService } from '../../services/mercadolibre-questions.service';
 import { dispatchToRuntime } from '../../services/agent-runtime.service';
 import type { MercadolibreNotification } from '../../types/mercadolibre';
 
@@ -53,7 +54,7 @@ export async function mercadolibreWebhookRoutes(app: FastifyInstance): Promise<v
     {
       schema: {
         tags: ['mercadolibre-webhooks'],
-        summary: 'Callback de notificaciones de MercadoLibre (orders_v2 + messages)',
+        summary: 'Callback de notificaciones de MercadoLibre (orders_v2 + messages + questions)',
         params: z.object({ secret: z.string() }),
         body: notificationSchema,
         response: {
@@ -110,6 +111,26 @@ export async function mercadolibreWebhookRoutes(app: FastifyInstance): Promise<v
             })
             .catch((err) => {
               log.error({ err, resource: payload.resource }, 'mercadolibre: processMessage falló');
+            });
+        });
+        return reply.send({ ok: true });
+      }
+
+      if (topic === 'questions') {
+        setImmediate(() => {
+          mercadolibreQuestionsService
+            .processQuestion(payload, log)
+            .then((result) => {
+              if (!result.ok) {
+                log.error({ resource: payload.resource, error: result.error },
+                  'mercadolibre: pregunta NO procesada');
+              } else if (result.skipped) {
+                log.info({ resource: payload.resource, skipped: result.skipped },
+                  'mercadolibre: pregunta sin respuesta automática');
+              }
+            })
+            .catch((err) => {
+              log.error({ err, resource: payload.resource }, 'mercadolibre: processQuestion falló');
             });
         });
         return reply.send({ ok: true });

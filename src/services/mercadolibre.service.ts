@@ -5,6 +5,7 @@
 import type { FastifyBaseLogger } from 'fastify';
 import { supabase } from '../lib/supabase';
 import {
+  MAX_ANSWER_LENGTH,
   MAX_MESSAGE_LENGTH,
   MercadolibreApiError,
   agentUserIdForSite,
@@ -23,6 +24,17 @@ export type MercadolibreConnection = {
   expires_at: string;
   scope: string | null;
   connected_at: string;
+};
+
+/** Config del canal. Identidad (client_id, ml_user_id): sobrevive a los cortes. */
+export type MercadolibreSettings = {
+  client_id: number;
+  ml_user_id: number;
+  sale_enabled: boolean;
+  sale_template: string | null;
+  questions_enabled: boolean;
+  questions_workflow_id: number | null;
+  questions_signature: string | null;
 };
 
 /** Margen para refrescar antes de que expire, y no perder una request por 10 s. */
@@ -70,6 +82,41 @@ export function prepareText(text: string, log?: FastifyBaseLogger): string {
     log?.warn({ original: clean.length }, 'mercadolibre: mensaje truncado a 350 caracteres');
   }
   return final;
+}
+
+/**
+ * Arma la respuesta pública a una pregunta: lo del agente + la firma estática.
+ *
+ * El tope de 2000 aplica al total, pero la firma es del cliente y nunca se recorta:
+ * se le resta a lo que puede ocupar el agente.
+ */
+export function buildAnswer(
+  agentText: string,
+  signature: string | null | undefined,
+  log?: FastifyBaseLogger,
+): string {
+  const firma = sanitize(signature ?? '').trim();
+  const sep = firma ? '\n\n' : '';
+  const cupo = MAX_ANSWER_LENGTH - firma.length - sep.length;
+
+  let cuerpo = sanitize(agentText).trim();
+  if (cuerpo.length > cupo) {
+    log?.warn({ original: cuerpo.length, cupo }, 'mercadolibre: respuesta a pregunta truncada');
+    cuerpo = `${cuerpo.slice(0, Math.max(0, cupo - 3)).trimEnd()}...`;
+  }
+  return `${cuerpo}${sep}${firma}`;
+}
+
+/**
+ * ¿El texto tiene datos de contacto? ML modera las respuestas que los incluyen, y
+ * como la firma va en TODAS, una firma con un teléfono haría rechazar cada una.
+ * Heurística deliberadamente amplia: preferimos que el cliente reescriba la firma.
+ */
+export function hasContactInfo(text: string): boolean {
+  const url = /(https?:\/\/|www\.)\S+|\b[a-z0-9-]+\.(com|net|org|ar|io|app|store|shop)(\.[a-z]{2})?\b/i;
+  const email = /[^\s@]+@[^\s@]+\.[^\s@]+/;
+  const phone = /(\+?\d[\d\s().-]{6,}\d)/;
+  return url.test(text) || email.test(text) || phone.test(text);
 }
 
 /**
@@ -131,6 +178,33 @@ export const mercadolibreService = {
       { onConflict: 'ml_user_id' },
     );
     if (error) throw error;
+  },
+
+  /**
+   * Config del canal para la cuenta. Sin fila → defaults (todo apagado): una cuenta
+   * recién conectada no hace nada automático hasta que el cliente lo configure.
+   */
+  async getSettings(clientId: number, mlUserId: number): Promise<MercadolibreSettings> {
+    const { data, error } = await supabase
+      .from('mercadolibre_settings')
+      .select(
+        'client_id, ml_user_id, sale_enabled, sale_template, questions_enabled, questions_workflow_id, questions_signature',
+      )
+      .eq('client_id', clientId)
+      .eq('ml_user_id', mlUserId)
+      .maybeSingle();
+    if (error) throw error;
+    return (
+      (data as MercadolibreSettings | null) ?? {
+        client_id: clientId,
+        ml_user_id: mlUserId,
+        sale_enabled: false,
+        sale_template: null,
+        questions_enabled: false,
+        questions_workflow_id: null,
+        questions_signature: null,
+      }
+    );
   },
 
   /** Borra la conexión (revoca nuestro acceso). Usado por el corte de ciclo de vida. */

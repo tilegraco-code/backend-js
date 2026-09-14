@@ -167,6 +167,48 @@ export const accountLifecycleEmails = {
   },
 };
 
+/** Escapa texto de terceros (p.ej. lo que escribe un comprador) antes de meterlo en HTML. */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+export const mercadolibreEmails = {
+  /** El agente no supo responder una pregunta de una publicación. */
+  questionNeedsHuman(input: {
+    itemTitle: string | null;
+    question: string;
+    buyer: string | null;
+    reason: string | null;
+  }): { subject: string; html: string } {
+    const item = input.itemTitle ? escapeHtml(input.itemTitle) : 'una de tus publicaciones';
+    const quote = `<blockquote style="margin:0 0 16px;padding:12px 16px;background-color:#f7f7f7;border-left:3px solid ${BRAND_GREEN};border-radius:4px;font-size:15px;line-height:1.6;color:#333333;">${escapeHtml(input.question)}</blockquote>`;
+
+    return {
+      subject: 'Tenés una pregunta de MercadoLibre sin responder',
+      html: layout({
+        title: 'Una pregunta necesita tu respuesta',
+        bodyHtml:
+          p(
+            `${input.buyer ? `<strong>${escapeHtml(input.buyer)}</strong>` : 'Un comprador'} preguntó en <strong>${item}</strong>:`,
+          ) +
+          quote +
+          p(
+            'Tu agente no tenía la información para responderla, así que no publicó nada. Respondela vos antes de que el comprador se vaya.',
+          ) +
+          (input.reason
+            ? `<p style="margin:0 0 12px;font-size:13px;line-height:1.6;color:#888888;">Motivo del agente: ${escapeHtml(input.reason)}</p>`
+            : ''),
+        cta: { label: 'Responder pregunta', href: `${APP_URL}/dashboard/inbox?tab=mercadolibre&status=needs_human` },
+      }),
+    };
+  },
+};
+
 export const emailService = {
   /**
    * Envía un email. Devuelve true si se envió, false si falló (no lanza:
