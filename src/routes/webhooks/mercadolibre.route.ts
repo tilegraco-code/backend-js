@@ -78,6 +78,24 @@ export async function mercadolibreWebhookRoutes(app: FastifyInstance): Promise<v
       const topic = payload.topic;
       const log = request.log;
 
+      // Una línea por notificación, ANTES de decidir qué hacer con ella. `received` es cuándo
+      // ML registró el evento y `sent` cuándo salió este intento: la diferencia es la demora
+      // de entrega, y `attempts > 1` delata que los intentos anteriores no nos llegaron.
+      const receivedMs = typeof payload.received === 'string' ? Date.parse(payload.received) : NaN;
+      log.info(
+        {
+          topic,
+          resource: payload.resource,
+          ml_user_id: payload.user_id,
+          actions: payload.actions,
+          attempts: payload.attempts,
+          sent: payload.sent,
+          received: payload.received,
+          delay_s: Number.isFinite(receivedMs) ? Math.round((Date.now() - receivedMs) / 1000) : null,
+        },
+        'mercadolibre: notificación recibida',
+      );
+
       if (topic === 'orders_v2') {
         setImmediate(() => {
           mercadolibreWebhookService.processOrder(payload, log).catch((err) => {
