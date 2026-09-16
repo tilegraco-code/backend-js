@@ -33,6 +33,9 @@ type CaseRow = {
   evaluation: CaseEvaluation | null;
   opened_at: string;
   completed_at: string | null;
+  sync_status?: string;
+  sync_error?: string | null;
+  external_ref?: { drive_folder_url?: string } | null;
 };
 
 /** Lo que ven el agente y el dashboard. */
@@ -46,6 +49,8 @@ export type CaseView = {
   evaluation: CaseEvaluation;
   opened_at: string;
   completed_at: string | null;
+  /** Estado del envío a Google, para el dashboard. El agente no lo usa. */
+  sync: { status: string | null; error: string | null; folder_url: string | null };
   /** Datos que el agente intentó guardar y no existen en este tipo de caso. */
   ignored_keys?: string[];
 };
@@ -502,6 +507,11 @@ function toView(row: CaseRow, evaluation: CaseEvaluation): CaseView {
     evaluation,
     opened_at: row.opened_at,
     completed_at: row.completed_at,
+    sync: {
+      status: row.sync_status ?? null,
+      error: row.sync_error ?? null,
+      folder_url: row.external_ref?.drive_folder_url ?? null,
+    },
   };
 }
 

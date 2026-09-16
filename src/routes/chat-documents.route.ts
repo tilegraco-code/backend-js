@@ -18,6 +18,8 @@ const documentSchema = z.object({
   legible: z.boolean().nullable(),
   issues: z.array(z.string()),
   duplicate_of: z.number().nullable(),
+  case_id: z.number().nullable(),
+  drive_url: z.string().nullable(),
 });
 
 export async function chatDocumentsRoutes(app: FastifyInstance): Promise<void> {
@@ -66,6 +68,8 @@ export async function chatDocumentsRoutes(app: FastifyInstance): Promise<void> {
             legible: row.legible,
             issues: row.issues ?? [],
             duplicate_of: row.duplicate_of,
+            case_id: row.case_id,
+            drive_url: row.external_ref?.drive_url ?? null,
           })),
         };
       } catch (err) {

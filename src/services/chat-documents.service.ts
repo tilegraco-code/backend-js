@@ -70,6 +70,7 @@ export type ChatDocumentRow = {
   last_error: string | null;
   duplicate_of: number | null;
   case_id: number | null;
+  external_ref: { drive_name?: string; drive_file_id?: string; drive_url?: string } | null;
   created_at: string;
   updated_at: string;
 };
