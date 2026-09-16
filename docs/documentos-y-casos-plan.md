@@ -758,6 +758,10 @@ Reemplaza lo que dicen las secciones anteriores sobre extracción de datos y che
   `agentuse` (canal `document_review`) antes de guardar el resultado. Como `usage_counts_in_range`
   cuenta filas de `agentuse`, cada revisión entra como un uso. Una re-revisión (por ejemplo al
   cambiar el tipo de caso) también cuenta: se gastaron tokens.
+- **El agente no evalúa los archivos (2026-09-17).** Con caso abierto, fotos y documentos entran
+  al turno como una nota, no como contenido: el estado del caso es la única fuente. Motivo: con una
+  denuncia legítima de 31 páginas el agente leyó las primeras 20 y le pidió al cliente reenviarla.
+  La revisión solo marca ilegible lo que no se puede reconocer; no juzga completitud ni validez.
 - **Checks:** el evaluador los sigue soportando, pero sin extracción de datos no hay contra qué
   compararlos. El seed no los usa y el editor del dashboard no los ofrece.
 
