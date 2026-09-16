@@ -6,6 +6,7 @@ import { FastifyBaseLogger } from 'fastify';
 import { supabase } from '../lib/supabase';
 import { outgoingMessageService } from './outgoing-message.service';
 import { forwardToN8n, N8nForwardPayload } from './n8n-forward';
+import { casesService } from './cases.service';
 
 export type InvokeResponse = {
   response?: string | null;
@@ -121,6 +122,14 @@ export async function runViaAgent(
   log: FastifyBaseLogger,
 ): Promise<void> {
   // 1. Invocar al agente (caja negra).
+  //
+  // Si el chat tiene un caso activo, su estado viaja en el contexto de CADA turno: el agente
+  // siempre ve qué falta sin depender de acordarse de consultar. Si la consulta falla, el turno
+  // sale igual sin el caso.
+  const activeCase = await casesService.getActive(clientId, payload.chat_id).catch((err) => {
+    log.error({ err, chatId: payload.chat_id }, 'no se pudo leer el caso activo del chat');
+    return null;
+  });
   const result = await invokeAgent(
     {
       agentId,
@@ -129,6 +138,7 @@ export async function runViaAgent(
       senderName: payload.nombre,
       channel,
       attachments: payload.attachments,
+      ...(activeCase ? { extraContext: { case: activeCase } } : {}),
     },
     log,
   );

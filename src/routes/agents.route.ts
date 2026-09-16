@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { agentSystemMessageService } from '../services/agent-system-message.service';
 import { composioService } from '../services/composio.service';
 import { refreshAgentRuntimeCache, dispatchToRuntime } from '../services/agent-runtime.service';
+import { casesService } from '../services/cases.service';
 import { supabase } from '../lib/supabase';
 
 const errorResponseSchema = z.object({ error: z.string() });
@@ -79,6 +80,9 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
                 default: z.boolean(),
               }),
             ),
+            // Tipos de caso activos. Vacío = el agente no trabaja con casos y el runtime no le
+            // adjunta las tools de casos. Ver docs/documentos-y-casos-plan.md.
+            case_types: z.array(z.object({ key: z.string(), label: z.string(), description: z.string() })),
           }),
           502: errorResponseSchema,
         },
@@ -100,7 +104,7 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
           | 'router';
         const isRouter = agent_type === 'router';
 
-        const [system_message, tools, apiToolsRes, routesRes] = await Promise.all([
+        const [system_message, tools, apiToolsRes, routesRes, case_types] = await Promise.all([
           isRouter
             ? agentSystemMessageService.buildRouterInstructions(agentId)
             : agentSystemMessageService.build(agentId),
@@ -121,6 +125,8 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
                 .eq('parent_agent_id', agentId)
                 .order('sort_order', { ascending: true })
             : Promise.resolve({ data: [] as Record<string, unknown>[] }),
+          // Un router no abre casos: los abren sus ramas, cada una con su config.
+          isRouter ? Promise.resolve([]) : casesService.listActiveTypes(agentId),
         ]);
 
         const api_tools = (apiToolsRes.data ?? []).map((t) => ({
@@ -174,6 +180,7 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
           api_tools,
           agent_type,
           routes,
+          case_types,
         };
       } catch (e) {
         return reply.status(502).send({ error: (e as Error)?.message ?? 'Error desconocido' });

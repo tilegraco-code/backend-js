@@ -7,20 +7,29 @@
 import { createHash } from 'node:crypto';
 import { FastifyBaseLogger } from 'fastify';
 import { supabase } from '../lib/supabase';
+import { caseRequirementsSchema } from '../schemas/case-definition';
 // Solo tipos: attachment-ingest importa este servicio para registrar, y un import de valor en
 // la otra dirección sería circular.
 import type { StoredAttachment } from './attachment-ingest.service';
+import { casesService } from './cases.service';
+import { MAX_ATTEMPTS } from './chat-documents.constants';
+
+export { MAX_ATTEMPTS };
 
 const BUCKET = 'chat-attachments';
-
-/** Intentos antes de dejar un documento en failed para siempre. */
-export const MAX_ATTEMPTS = 5;
 
 /** Base del backoff: 30 s, 60 s, 2 min, 4 min… */
 const BACKOFF_BASE_MS = 30_000;
 
 /** Timeout de una llamada a /documents/process. Un PDF escaneado pasa por visión y tarda. */
 const PROCESS_TIMEOUT_MS = 90_000;
+
+/**
+ * Cuánto espera la ingesta a que se procesen los documentos de un caso abierto antes de
+ * despachar el turno. Con eso, en el caso normal el agente ya contesta sabiendo si la licencia
+ * sirve. Si se pasa, el turno sale igual y el procesamiento termina solo.
+ */
+const INLINE_TIMEOUT_MS = Number(process.env.CHAT_DOCUMENTS_INLINE_TIMEOUT_MS ?? 12_000);
 
 /** Vida de la URL que se le pasa al runtime. Alcanza con que dure el procesamiento. */
 const SIGNED_URL_TTL_SECONDS = 600;
@@ -54,6 +63,7 @@ export type ChatDocumentRow = {
   locked_at: string | null;
   last_error: string | null;
   duplicate_of: number | null;
+  case_id: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -81,8 +91,10 @@ export const chatDocumentsService = {
    *
    * Idempotente por (message_id, idx): si el proveedor reintenta el webhook, no duplica.
    * Si el cliente ya había mandado el mismo archivo en este chat, la fila queda skipped
-   * apuntando a la original, así no se procesa ni se sube dos veces.
+   * apuntando a la original, así no se procesa ni se sube dos veces. Si el chat tiene un caso
+   * activo, el documento queda asociado a él.
    *
+   * Devuelve el id cuando conviene procesarlo inline (quedó pending y pertenece a un caso).
    * Nunca lanza: que falle el registro no puede cortar la ingesta ni el turno.
    */
   async register(
@@ -95,43 +107,99 @@ export const chatDocumentsService = {
       sha256: string;
     },
     log: FastifyBaseLogger,
-  ): Promise<void> {
+  ): Promise<{ inlineId: number | null }> {
     const { clientId, chatId, messageId, idx, stored } = input;
     try {
-      const { data: original } = await supabase
-        .from('chat_documents')
-        .select('id')
-        .eq('chat_id', chatId)
-        .eq('sha256', input.sha256)
-        .is('duplicate_of', null)
-        .not('message_id', 'eq', messageId)
-        .order('id', { ascending: true })
-        .limit(1)
-        .maybeSingle();
+      const [{ data: original }, activeCase] = await Promise.all([
+        supabase
+          .from('chat_documents')
+          .select('id')
+          .eq('chat_id', chatId)
+          .eq('sha256', input.sha256)
+          .is('duplicate_of', null)
+          .not('message_id', 'eq', messageId)
+          .order('id', { ascending: true })
+          .limit(1)
+          .maybeSingle(),
+        casesService.getActiveRow(clientId, chatId),
+      ]);
 
       const status: ChatDocumentStatus =
         original || SKIPPED_KINDS.has(stored.kind) ? 'skipped' : 'pending';
 
-      const { error } = await supabase.from('chat_documents').upsert(
-        {
-          client_id: clientId,
-          chat_id: chatId,
-          message_id: messageId,
-          idx,
-          storage_path: stored.path,
-          kind: stored.kind,
-          mime: stored.mime,
-          name: stored.name,
-          size: stored.size,
-          sha256: input.sha256,
-          status,
-          duplicate_of: original?.id ?? null,
-        },
-        { onConflict: 'message_id,idx', ignoreDuplicates: true },
-      );
+      const { data: inserted, error } = await supabase
+        .from('chat_documents')
+        .upsert(
+          {
+            client_id: clientId,
+            chat_id: chatId,
+            message_id: messageId,
+            idx,
+            storage_path: stored.path,
+            kind: stored.kind,
+            mime: stored.mime,
+            name: stored.name,
+            size: stored.size,
+            sha256: input.sha256,
+            status,
+            duplicate_of: original?.id ?? null,
+            case_id: activeCase?.id ?? null,
+            sync_status: activeCase ? 'pending' : 'none',
+          },
+          { onConflict: 'message_id,idx', ignoreDuplicates: true },
+        )
+        .select('id');
       if (error) throw error;
+
+      const id = (inserted?.[0]?.id as number | undefined) ?? null;
+      if (id == null || !activeCase) return { inlineId: null };
+
+      // Un audio o un duplicado no se procesa, pero igual cambia la evaluación del caso
+      // (p. ej. un duplicado que estaba en proceso). Reevaluar es barato.
+      if (status !== 'pending') {
+        await casesService.reevaluate(activeCase.id, log).catch((err) =>
+          log.error({ err, caseId: activeCase.id }, 'chat-documents: reevaluación falló'),
+        );
+        return { inlineId: null };
+      }
+      return { inlineId: id };
     } catch (err) {
       log.error({ err, messageId, idx }, 'chat-documents: no se pudo registrar el adjunto');
+      return { inlineId: null };
+    }
+  },
+
+  /**
+   * Procesa ya mismo los documentos de un caso, con un tope de espera.
+   *
+   * Toma cada fila con un update condicionado a status = pending: si el worker ya la había
+   * tomado, acá no se toma y no se procesa dos veces. Lo que no termina a tiempo sigue
+   * corriendo en background.
+   */
+  async processInline(ids: number[], log: FastifyBaseLogger): Promise<void> {
+    if (ids.length === 0) return;
+    const { data, error } = await supabase
+      .from('chat_documents')
+      .update({ status: 'processing', locked_at: new Date().toISOString(), attempts: 1, updated_at: new Date().toISOString() })
+      .in('id', ids)
+      .eq('status', 'pending')
+      .eq('attempts', 0)
+      .select('*');
+    if (error) {
+      log.error({ err: error, ids }, 'chat-documents: claim inline falló — queda para el worker');
+      return;
+    }
+
+    const rows = (data ?? []) as ChatDocumentRow[];
+    if (rows.length === 0) return;
+
+    const all = Promise.all(rows.map((row) => this.processOne(row, log)));
+    const timedOut = await Promise.race([
+      all.then(() => false),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(true), INLINE_TIMEOUT_MS)),
+    ]);
+    if (timedOut) {
+      log.warn({ ids, timeoutMs: INLINE_TIMEOUT_MS }, 'chat-documents: procesamiento inline no terminó a tiempo — sigue en background');
     }
   },
 
@@ -168,9 +236,15 @@ export const chatDocumentsService = {
 
   /** Procesa una fila ya tomada (status = processing). Devuelve true si quedó ready. */
   async processOne(row: ChatDocumentRow, log: FastifyBaseLogger): Promise<boolean> {
+    let ready = false;
     try {
-      const result = await callRuntime(row);
-      const { error } = await supabase
+      const catalog = row.case_id ? await loadCaseCatalog(row.case_id) : null;
+      const result = await callRuntime(row, catalog);
+
+      // Guardado condicionado al caso con el que se procesó. Si mientras tanto se abrió un
+      // caso (o cambió de tipo y se reencoló), este resultado se clasificó contra otro
+      // catálogo: no se pisa, la fila ya volvió a la cola con el correcto.
+      let query = supabase
         .from('chat_documents')
         .update({
           status: 'ready',
@@ -184,9 +258,17 @@ export const chatDocumentsService = {
           last_error: null,
           updated_at: new Date().toISOString(),
         })
-        .eq('id', row.id);
+        .eq('id', row.id)
+        .eq('status', 'processing');
+      query = row.case_id == null ? query.is('case_id', null) : query.eq('case_id', row.case_id);
+      const { data: saved, error } = await query.select('id');
       if (error) throw error;
-      return true;
+
+      if (!saved?.length) {
+        await requeueStale(row, log);
+      } else {
+        ready = true;
+      }
     } catch (err) {
       const permanent = err instanceof PermanentProcessError;
       const attempts = permanent ? MAX_ATTEMPTS : row.attempts;
@@ -210,12 +292,54 @@ export const chatDocumentsService = {
         })
         .eq('id', row.id);
       if (error) log.error({ err: error, documentId: row.id }, 'chat-documents: no se pudo marcar failed');
-      return false;
     }
+
+    // El caso se entera tanto de un ready como de una falla definitiva: las dos cambian lo que falta.
+    const { data: current } = await supabase.from('chat_documents').select('case_id').eq('id', row.id).maybeSingle();
+    const caseId = (current?.case_id as number | null) ?? null;
+    if (caseId != null) {
+      await casesService.reevaluate(caseId, log).catch((err) =>
+        log.error({ err, caseId }, 'chat-documents: reevaluación falló'),
+      );
+    }
+    return ready;
   },
 };
 
-async function callRuntime(row: ChatDocumentRow): Promise<ProcessResult> {
+/** El resultado llegó tarde (cambió el caso mientras se procesaba): vuelve a la cola. */
+async function requeueStale(row: ChatDocumentRow, log: FastifyBaseLogger): Promise<void> {
+  const { error } = await supabase
+    .from('chat_documents')
+    .update({
+      status: 'pending',
+      attempts: 0,
+      next_attempt_at: new Date().toISOString(),
+      locked_at: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', row.id)
+    .eq('status', 'processing');
+  if (error) log.error({ err: error, documentId: row.id }, 'chat-documents: no se pudo reencolar');
+  else log.info({ documentId: row.id }, 'chat-documents: cambió el caso durante el procesamiento — reencolado');
+}
+
+type RuntimeCatalog = {
+  catalog: { key: string; label: string; description: string; fields: { key: string; label: string; type: string }[] }[];
+  expected: string[];
+};
+
+/** Catálogo con el que se clasifica: el que quedó copiado en el caso al abrirlo. */
+async function loadCaseCatalog(caseId: number): Promise<RuntimeCatalog | null> {
+  const { data } = await supabase.from('chat_cases').select('requirements').eq('id', caseId).maybeSingle();
+  const parsed = caseRequirementsSchema.safeParse(data?.requirements);
+  if (!parsed.success) return null;
+  return {
+    catalog: Object.values(parsed.data.catalog),
+    expected: [...new Set(parsed.data.definition.documents.map((d) => d.type))],
+  };
+}
+
+async function callRuntime(row: ChatDocumentRow, catalog: RuntimeCatalog | null): Promise<ProcessResult> {
   const base = process.env.AGENT_RUNTIME_URL;
   if (!base) throw new Error('AGENT_RUNTIME_URL no configurado');
 
@@ -226,7 +350,6 @@ async function callRuntime(row: ChatDocumentRow): Promise<ProcessResult> {
   if (signError || !signed?.signedUrl) {
     throw new Error(`no se pudo firmar la URL del adjunto: ${signError?.message ?? 'sin URL'}`);
   }
-  const url = signed.signedUrl;
 
   const res = await fetch(`${base.replace(/\/$/, '')}/documents/process`, {
     method: 'POST',
@@ -236,10 +359,11 @@ async function callRuntime(row: ChatDocumentRow): Promise<ProcessResult> {
     },
     body: JSON.stringify({
       document_id: row.id,
-      url,
+      url: signed.signedUrl,
       kind: row.kind,
       mime: row.mime,
       name: row.name,
+      ...(catalog && catalog.catalog.length > 0 ? catalog : {}),
     }),
     signal: AbortSignal.timeout(PROCESS_TIMEOUT_MS),
   });

@@ -7,11 +7,15 @@ Plan de implementación.
 - **Fase 1 (spike Composio): HECHA.** Ver "Drive y Sheets" más abajo: se sube con
   `GOOGLEDRIVE_UPLOAD_FROM_URL` y una sola conexión (`googledrive`) cubre también el Sheet.
 - **Fase 2 (registro para todos): CÓDIGO HECHO, SIN PROBAR DE PUNTA A PUNTA.** Typecheck de
-  backend-js y tests de agente-tilegra (54) en verde. **La migración `chat_documents.sql` NO está
-  aplicada.** Pendientes de la fase: registrar los adjuntos del widget (hoy llegan a `run-turn` ya
+  backend-js y tests de agente-tilegra (54) en verde. Migración `chat_documents.sql` aplicada en el
+  proyecto Dashboard y `claim_chat_documents` verificada (claim atómico, segundo claim vacío). Pendientes de la fase: registrar los adjuntos del widget (hoy llegan a `run-turn` ya
   firmados, sin `path`) y usar el render de PDFs escaneados también en el turno
   (`app/attachments.py`), no solo en `/documents/process`.
-- Fases 3 a 7: sin empezar.
+- **Fase 3 (casos): CÓDIGO HECHO, SIN PROBAR DE PUNTA A PUNTA.** Migración `chat_cases.sql`
+  aplicada; numeración y "un caso activo por chat" verificados en la base. 24 tests en
+  backend-js y 70 en agente-tilegra. Hay un seed con la configuración de la aseguradora en
+  `db/seeds/aseguradora-casos.sql`. Ver "Implementación de la fase 3".
+- Fases 4 a 7: sin empezar.
 
 Primer cliente: una aseguradora de autos que necesita que el agente tome reclamos, pida la
 documentación según el tipo de siniestro, valide lo que llega, lo suba a una carpeta de Drive y
@@ -573,7 +577,7 @@ muestra. El agente sigue funcionando: la conversación y la validación no depen
 2. **Registro para todos — CÓDIGO HECHO (ver Estado):** migración, `chat_documents`, enganche en `ingestAttachments`,
    `/documents/process` sin catálogo, job de procesamiento, `GET /api/chats/:id/documents`, tool
    `documentos_del_chat`, PDFs escaneados.
-3. **Casos:** tablas de configuración, esquema Zod, evaluador con tests, `cases.service`, rutas,
+3. **Casos — CÓDIGO HECHO (ver Estado):** tablas de configuración, esquema Zod, evaluador con tests, `cases.service`, rutas,
    tools de escritura, procesamiento inline con timeout, clasificación con catálogo.
 4. **Sync:** Drive y Sheets, job de sync, idempotencia.
 5. **Turno proactivo** cuando el worker termina después del turno.
@@ -620,13 +624,72 @@ Las fases 2 y 3 se pueden probar sin dashboard cargando la configuración a mano
 
 ### Para probarlo
 
-1. Aplicar `db/migrations/chat_documents.sql` en el proyecto Dashboard.
+1. ~~Aplicar `db/migrations/chat_documents.sql`~~ (hecho 2026-09-16).
 2. Levantar los dos servicios con `AGENT_RUNTIME_URL` apuntando al runtime.
 3. Mandar por WhatsApp una foto, un PDF con texto, un PDF escaneado y la misma foto otra vez.
 4. Verificar en `chat_documents`: cuatro filas, la repetida en `skipped`, las demás en `ready`
    en menos de ~30 s. Preguntarle al agente "¿qué documentos te mandé?".
 5. Medir el costo por imagen en detalle alto (no pasa por `agentuse`: mirarlo en el uso de OpenAI
    o en LangSmith).
+
+---
+
+## Implementación de la fase 3
+
+Cambios respecto del diseño original, todos para no depender de que el modelo haga algo:
+
+- **El estado del caso va en el contexto de CADA turno.** `runViaAgent` busca el caso activo del
+  chat y lo manda en `context.case`; el runtime lo antepone al mensaje (`app/cases.py`). El agente
+  ve qué falta, qué no se lee y qué no coincide sin tener que consultar. `documentos_del_chat`
+  queda para ver el contenido de los archivos.
+- **"Activo" es `open` o `complete`.** El índice único cubre los dos: un documento que llega
+  después de completar el caso se asocia a él, y si no pasa la validación el caso vuelve a
+  `open`.
+- **Los documentos previos al caso se reclasifican.** Al abrir (y al cambiar de tipo) se asocian
+  los documentos del chat y los ya procesados vuelven a la cola para clasificarse contra el
+  catálogo del caso. Si un resultado llega después de ese cambio, no se guarda: se reencola
+  (`requeueStale`).
+- **Procesamiento inline solo con caso abierto.** Sin caso no hay nada que validar en el turno,
+  así que no se suma latencia.
+
+### backend-js
+
+- `db/migrations/chat_cases.sql`: `agent_case_settings`, `agent_document_types`,
+  `agent_case_types`, `case_counters` + `next_case_number()`, `chat_cases` y las columnas
+  `case_id`, `sync_status`, `external_ref` en `chat_documents`.
+- `src/schemas/case-definition.ts`: esquema Zod de la definición, el catálogo y el snapshot de
+  requisitos.
+- `src/services/case-evaluator.ts` (+ test): la función pura.
+- `src/services/cases.service.ts` (+ test de `sanitizeData`): abrir, `updateData`, `changeType`,
+  `cancel`, `reevaluate`, `getActive`, `listActiveTypes`. Normaliza los datos al guardar (fechas
+  locales a ISO, enums a la opción exacta, "sí" a `true`, "1.250.000,50" a número).
+- `src/routes/cases.route.ts`: `POST /api/cases`, `GET /api/cases/active`, `PATCH /api/cases/:id`
+  (una operación por llamada). Un `CaseError` sale con su mensaje para que el agente lo explique.
+- `runtime-config` devuelve `case_types` (vacío si el agente no tiene casos).
+- `chat-documents.service.ts`: asocia al caso activo, clasifica con el catálogo copiado en el
+  caso, reevalúa tras cada `ready` o falla, procesa inline con tope
+  (`CHAT_DOCUMENTS_INLINE_TIMEOUT_MS`, 12 s).
+- `pnpm test` (`tsx --test`, `node:test`).
+
+### agente-tilegra
+
+- `app/tools/cases.py`: `abrir_caso(tipo, datos?)`, `actualizar_datos_caso(datos)`,
+  `cambiar_tipo_caso(tipo)`, `cancelar_caso(motivo)`. Solo si `case_types` no está vacío. `tipo`
+  es un enum; chat, cliente y agente salen del turno y la config.
+- `app/cases.py`: el texto del estado, compartido por el prompt y las tools.
+- `app/documents.py`: con catálogo, salida estructurada armada al vuelo (`doc_type` enum + `otro`,
+  `confidence`, `extracted` con los campos del catálogo). Confianza menor a 0.6 → `otro`. Se
+  descartan los campos que no son del tipo elegido. Un PDF con texto se clasifica por texto.
+
+### Para probarlo
+
+1. Correr `db/seeds/aseguradora-casos.sql` con el `agent_id` del agente de prueba y refrescar el
+   runtime (`POST /api/agents/:id/refresh-runtime`).
+2. Escribirle "me robaron el auto" → tiene que abrir `robo_total` y pedir patente, fecha, lugar y
+   los documentos, con el número `SIN-2026-000001`.
+3. Mandar una foto de una cédula con otra patente → el turno siguiente tiene que decir que no
+   coincide.
+4. Mandar todo lo que falta → `chat_cases.status = complete` y el agente avisa.
 
 ---
 
