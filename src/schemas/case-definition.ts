@@ -51,7 +51,7 @@ export const checkSchema = z.object({
 export type Check = z.infer<typeof checkSchema>;
 
 export const documentRequirementSchema = z.object({
-  type: keySchema,
+  type: z.string().regex(KEY, 'Elegí qué documento se pide'),
   label: z.string().min(1).optional(),
   hint: z.string().optional(),
   min: z.number().int().min(1).max(20).default(1),

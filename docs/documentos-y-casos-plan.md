@@ -24,7 +24,10 @@ Plan de implementación.
   `agentuse`, canal `document_review`). Ver "Revisión mínima y cobro".
 - **Fase 5 (aviso proactivo): CÓDIGO HECHO, SIN PROBAR.** Migración `chat_cases_notify.sql`
   aplicada. 35 tests en backend-js, 69 en agente-tilegra.
-- Fases 6 y 7: sin empezar.
+- **Fase 6 (dashboard): CÓDIGO HECHO, SIN PROBAR EN EL NAVEGADOR.** Tab "Casos" en la config del
+  agente, panel del caso en la bandeja y plantilla "Aseguradora de autos". Typecheck y lint del
+  dashboard limpios; 40 tests en backend-js. Ver "Implementación de la fase 6".
+- Fase 7 (piloto): sin empezar.
 
 Primer cliente: una aseguradora de autos que necesita que el agente tome reclamos, pida la
 documentación según el tipo de siniestro, valide lo que llega, lo suba a una carpeta de Drive y
@@ -590,7 +593,7 @@ muestra. El agente sigue funcionando: la conversación y la validación no depen
    tools de escritura, procesamiento inline con timeout, clasificación con catálogo.
 4. **Sync — CÓDIGO HECHO (ver Estado):** Drive y Sheets, job de sync, idempotencia.
 5. **Turno proactivo — CÓDIGO HECHO (ver Estado)** cuando el worker termina después del turno.
-6. **Dashboard:** editor de casos, panel en la bandeja, plantilla.
+6. **Dashboard — CÓDIGO HECHO (ver Estado):** editor de casos, panel en la bandeja, plantilla.
 7. **Piloto con la aseguradora:** cargar su configuración, probar con documentos reales de
    cada tipo de siniestro, medir costo por documento procesado.
 
@@ -770,6 +773,37 @@ Reemplaza lo que dicen las secciones anteriores sobre extracción de datos y che
   o si pasaron más de 24 h desde el último mensaje del cliente en WhatsApp o Instagram. Si
   corresponde, despacha un turno con un aviso interno como mensaje; el estado del caso va en el
   contexto como en cualquier turno. Ese turno es un uso más.
+
+
+## Implementación de la fase 6
+
+### backend-js
+
+- `src/schemas/case-config.ts`: esquema de la configuración entera (settings, catálogo, tipos de
+  caso). Acepta links de Drive y Sheets y extrae el id, normaliza el prefijo y valida que cada tipo
+  pida documentos que existen, que haya un tipo activo para habilitar y que un Sheet tenga pestaña.
+- `src/schemas/case-templates.ts`: plantilla "Aseguradora de autos" (la misma del seed, sin checks).
+- `src/services/case-config.service.ts` + `src/routes/case-config.route.ts`:
+  `GET/PUT /api/agents/:id/case-config` (422 con `issues`) y `GET /api/agents/case-templates`.
+  Guardar refresca el runtime.
+- La vista del caso trae `sync` (estado, error, link a la carpeta) y los documentos `case_id` y
+  `drive_url`, para el panel.
+
+### dashboard-tilegra
+
+- Tab **Casos** (`components/agents/tabs/casos-tab.tsx`), oculto en agentes coordinadores:
+  activación, prefijo, documentos (nombre + descripción), tipos de caso (datos con tipo y
+  opciones, documentos con cantidad, indicación y "pedir solo si <dato sí/no u opciones> es
+  <valor>"), carpeta y planilla con aviso si Google Drive no está conectado, plantillas. Se guarda
+  todo junto con un botón; los errores de validación se listan arriba del botón.
+- `lib/cases-form.ts`: modelo del formulario. Las filas se referencian por un id local, así un
+  documento nuevo se puede pedir antes de guardar. Las claves se generan desde el nombre al
+  guardar y después no cambian.
+- `app/api/agents/[id]/casos/route.ts` (proxy con sesión + `agentBelongsToClient`) y
+  `app/api/unipile/chats/[id]/case/route.ts`.
+- Panel del caso en la bandeja (`components/case-panel.tsx`): número, estado, datos, qué falta,
+  documentos con su revisión y link a Drive, error de sync. Solo aparece si el chat tiene caso, en
+  pantallas anchas (xl). Se refresca con cada mensaje y cada 15 s.
 
 ---
 
