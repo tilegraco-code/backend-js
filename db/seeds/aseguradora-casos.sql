@@ -6,6 +6,10 @@
 -- Uso: reemplazar 0 por el agent_id en la línea de abajo. Después de correrlo, refrescar el
 -- runtime (POST /api/agents/:id/refresh-runtime) para que el agente tome las tools de casos.
 
+-- Todo en una transacción: la tabla temporal vive hasta el commit, y si algo falla no queda
+-- una configuración a medias.
+begin;
+
 create temporary table seed_target (agent_id integer) on commit drop;
 insert into seed_target values (0);  -- ← agent_id
 
@@ -138,6 +142,8 @@ cross join (values
 on conflict (agent_id, key) do update
   set label = excluded.label, description = excluded.description, definition = excluded.definition,
       position = excluded.position, active = true, updated_at = now();
+
+commit;
 
 -- 4. Destino en Google (opcional) ---------------------------------------------
 --
