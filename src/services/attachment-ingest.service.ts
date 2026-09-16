@@ -11,6 +11,7 @@
 // parámetro (`FetchBytes`) y todo lo de abajo es común.
 import { FastifyBaseLogger } from 'fastify';
 import { supabase } from '../lib/supabase';
+import { chatDocumentsService, sha256 } from './chat-documents.service';
 
 const BUCKET = 'chat-attachments';
 
@@ -170,6 +171,9 @@ export async function ingestAttachments(
 ): Promise<StoredAttachment[]> {
   const { clientId, chatId, messageId, attachments, fetchBytes } = params;
   const stored: StoredAttachment[] = [];
+  // Documentos que pertenecen a un caso abierto: se procesan antes de volver, así el turno
+  // que sigue ya sabe si sirven.
+  const inlineIds: number[] = [];
 
   const accepted = attachments.slice(0, MAX_PER_MESSAGE);
   if (attachments.length > accepted.length) {
@@ -216,18 +220,29 @@ export async function ingestAttachments(
         continue;
       }
 
-      stored.push({
+      const item: StoredAttachment = {
         kind: kindFromMime(mime),
         mime,
         name: attachment.name,
         size: bytes.byteLength,
         path,
-      });
+      };
+      stored.push(item);
+
+      // Registro para que el agente pueda consultarlo después del turno (ver
+      // docs/documentos-y-casos-plan.md). Va acá y no en cada canal para que ninguno pueda
+      // olvidarse. No lanza: un registro fallido no le quita el adjunto al turno.
+      const { inlineId } = await chatDocumentsService.register(
+        { clientId, chatId, messageId, idx: index, stored: item, sha256: sha256(bytes) },
+        log,
+      );
+      if (inlineId != null) inlineIds.push(inlineId);
     } catch (e) {
       log.error({ err: e, messageId, providerId: attachment.providerId }, 'adjuntos: ingesta falló');
     }
   }
 
+  await chatDocumentsService.processInline(inlineIds, log);
   return stored;
 }
 

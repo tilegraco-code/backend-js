@@ -15,6 +15,9 @@ import { googleOauthRoutes } from './google-oauth.route';
 import { googleRoutes } from './google.route';
 import { composioRoutes } from './composio.route';
 import { agentsRoute } from './agents.route';
+import { chatDocumentsRoutes } from './chat-documents.route';
+import { casesRoutes } from './cases.route';
+import { caseConfigRoutes } from './case-config.route';
 import { metaCapiRoute } from './meta-capi.route';
 import { internalTokenAuth } from '../middlewares/auth.middleware';
 
@@ -62,6 +65,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await api.register(googleRoutes, { prefix: '/google' });
       await api.register(composioRoutes, { prefix: '/composio' });
       await api.register(agentsRoute, { prefix: '/agents' });
+      await api.register(chatDocumentsRoutes, { prefix: '/chats' });
+      await api.register(casesRoutes, { prefix: '/cases' });
+      await api.register(caseConfigRoutes, { prefix: '/agents' });
     },
     { prefix: '/api' },
   );
