@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
+import { casesService } from '../services/cases.service';
 import { chatDocumentsService, MAX_ATTEMPTS } from '../services/chat-documents.service';
 
 const errorResponseSchema = z.object({ error: z.string() });
@@ -38,20 +39,35 @@ export async function chatDocumentsRoutes(app: FastifyInstance): Promise<void> {
         summary: 'Documentos recibidos en un chat, con su clasificación y estado',
         security: [{ InternalToken: [] }],
         params: z.object({ chatId: z.string().min(1) }),
-        querystring: z.object({ client_id: z.coerce.number().int().positive() }),
+        querystring: z.object({
+          client_id: z.coerce.number().int().positive(),
+          // `active_case`: si el chat tiene un caso activo, solo sus documentos. Lo usa la tool del
+          // agente: los archivos de un caso cancelado o de antes del caso no cuentan, y si los ve
+          // le dice al cliente que "ya los mandó". Sin el parámetro, todos (panel de la bandeja).
+          scope: z.enum(['all', 'active_case']).default('all'),
+        }),
         response: {
-          200: z.object({ documents: z.array(documentSchema) }),
+          200: z.object({
+            documents: z.array(documentSchema),
+            // Documentos del chat que quedaron fuera por el scope.
+            excluded_count: z.number(),
+            case_number: z.string().nullable(),
+          }),
           500: errorResponseSchema,
         },
       },
     },
     async (request, reply) => {
       try {
-        const rows = await chatDocumentsService.listForChat(
-          request.query.client_id,
-          request.params.chatId,
-        );
+        const { client_id, scope } = request.query;
+        const [all, activeCase] = await Promise.all([
+          chatDocumentsService.listForChat(client_id, request.params.chatId),
+          scope === 'active_case' ? casesService.getActiveRow(client_id, request.params.chatId) : null,
+        ]);
+        const rows = activeCase ? all.filter((row) => row.case_id === activeCase.id) : all;
         return {
+          excluded_count: all.length - rows.length,
+          case_number: activeCase?.number ?? null,
           documents: rows.map((row) => ({
             id: row.id,
             message_id: row.message_id,
