@@ -18,7 +18,13 @@ Plan de implementación.
 - **Fase 4 (sync a Drive y Sheets): CÓDIGO HECHO, SIN PROBAR CONTRA GOOGLE.** Migración
   `chat_cases_sync.sql` aplicada. 31 tests en backend-js (incluye nombres, columnas y filas del
   Sheet). Ver "Implementación de la fase 4".
-- Fases 5 a 7: sin empezar.
+- **Revisión mínima y cobro por uso (2026-09-16).** Decisión de producto: solo se valida que lo que
+  mandó el cliente cubra lo que se pidió. Detalle bajo, sin transcribir ni extraer datos, razonamiento
+  mínimo, y solo para documentos de un caso. **Cada revisión que consume tokens es un uso** (fila en
+  `agentuse`, canal `document_review`). Ver "Revisión mínima y cobro".
+- **Fase 5 (aviso proactivo): CÓDIGO HECHO, SIN PROBAR.** Migración `chat_cases_notify.sql`
+  aplicada. 35 tests en backend-js, 69 en agente-tilegra.
+- Fases 6 y 7: sin empezar.
 
 Primer cliente: una aseguradora de autos que necesita que el agente tome reclamos, pida la
 documentación según el tipo de siniestro, valide lo que llega, lo suba a una carpeta de Drive y
@@ -583,7 +589,7 @@ muestra. El agente sigue funcionando: la conversación y la validación no depen
 3. **Casos — CÓDIGO HECHO (ver Estado):** tablas de configuración, esquema Zod, evaluador con tests, `cases.service`, rutas,
    tools de escritura, procesamiento inline con timeout, clasificación con catálogo.
 4. **Sync — CÓDIGO HECHO (ver Estado):** Drive y Sheets, job de sync, idempotencia.
-5. **Turno proactivo** cuando el worker termina después del turno.
+5. **Turno proactivo — CÓDIGO HECHO (ver Estado)** cuando el worker termina después del turno.
 6. **Dashboard:** editor de casos, panel en la bandeja, plantilla.
 7. **Piloto con la aseguradora:** cargar su configuración, probar con documentos reales de
    cada tipo de siniestro, medir costo por documento procesado.
@@ -731,6 +737,39 @@ conserva el nombre anterior.
    documento: tiene que actualizar la misma fila.
 4. Desconectar Google: `chat_cases.sync_status = failed` con `sync_error` legible. Reconectar y
    mandar un dato: se sincroniza.
+
+---
+
+## Revisión mínima y cobro
+
+Reemplaza lo que dicen las secciones anteriores sobre extracción de datos y checks.
+
+- **Qué se revisa:** solo documentos de un caso activo. Sin caso, el documento se registra como
+  `skipped` y no cuesta nada; si después se abre un caso en el chat, vuelve a la cola.
+- **Qué responde la revisión:** `doc_type` (enum del catálogo + `otro`), `confidence`, `legible`,
+  `issues` y un `summary` de una frase. No se transcribe ni se extrae nada.
+- **Costo:** imagen en detalle bajo; PDF con texto por texto (primeras 2 páginas, 3000
+  caracteres); PDF escaneado, solo la primera página en detalle bajo; `reasoning_effort` igual al
+  del router (`minimal`).
+- **Cobro:** el runtime devuelve `usage`; si trae tokens, backend-js inserta una fila en
+  `agentuse` (canal `document_review`) antes de guardar el resultado. Como `usage_counts_in_range`
+  cuenta filas de `agentuse`, cada revisión entra como un uso. Una re-revisión (por ejemplo al
+  cambiar el tipo de caso) también cuenta: se gastaron tokens.
+- **Checks:** el evaluador los sigue soportando, pero sin extracción de datos no hay contra qué
+  compararlos. El seed no los usa y el editor del dashboard no los ofrece.
+
+## Implementación de la fase 5
+
+- `chat-documents.service.ts`: la revisión corre con un contexto `inTurn`. Si terminó dentro de
+  la espera inline, el turno ya la vio. Si terminó en el worker o después de vencer la espera, y
+  vale la pena (ilegible, `otro`, un documento que no se pidió, falla definitiva o caso completo),
+  deja `chat_cases.notify_requested_at` (solo si estaba vacío: agrupa).
+- `case-notify.service.ts` + `case-notify.job.ts` (cada 10 s, `CASE_NOTIFY_CRON`): espera 20 s
+  para agrupar, no más de un aviso por chat cada 60 s, espera hasta 5 min si quedan documentos en
+  revisión. Descarta si un operador tomó el chat, si el agente ya respondió después del resultado
+  o si pasaron más de 24 h desde el último mensaje del cliente en WhatsApp o Instagram. Si
+  corresponde, despacha un turno con un aviso interno como mensaje; el estado del caso va en el
+  contexto como en cualquier turno. Ese turno es un uso más.
 
 ---
 

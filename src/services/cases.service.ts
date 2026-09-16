@@ -379,8 +379,8 @@ function evaluateRow(row: CaseRow, docs: EvaluableDocument[]): CaseEvaluation {
 }
 
 /**
- * Asocia al caso los documentos que el cliente mandó antes de abrirlo. Los que ya se habían
- * procesado sin catálogo vuelven a la cola para clasificarse contra el del caso.
+ * Asocia al caso los documentos que el cliente mandó antes de abrirlo y los pone en cola de
+ * revisión contra el catálogo del caso.
  */
 async function attachChatDocuments(row: CaseRow, log: FastifyBaseLogger): Promise<void> {
   const { error } = await supabase
@@ -388,7 +388,8 @@ async function attachChatDocuments(row: CaseRow, log: FastifyBaseLogger): Promis
     .update({ case_id: row.id, sync_status: 'pending', updated_at: new Date().toISOString() })
     .eq('client_id', row.client_id)
     .eq('chat_id', row.chat_id)
-    .is('case_id', null);
+    .is('case_id', null)
+    .is('duplicate_of', null);
   if (error) {
     log.error({ err: error, caseId: row.id }, 'cases: no se pudieron asociar los documentos previos');
     return;
@@ -396,7 +397,11 @@ async function attachChatDocuments(row: CaseRow, log: FastifyBaseLogger): Promis
   await requeueForClassification(row.id, log);
 }
 
-/** Vuelve a poner en cola los documentos del caso que ya estaban procesados. */
+/**
+ * Pone en cola la revisión de los documentos del caso: los que llegaron antes de abrirlo (se
+ * registraron sin revisar) y los ya revisados contra el catálogo de otro tipo de caso. Los
+ * duplicados, audios y videos no se revisan.
+ */
 async function requeueForClassification(caseId: number, log: FastifyBaseLogger): Promise<void> {
   const { error } = await supabase
     .from('chat_documents')
@@ -406,11 +411,15 @@ async function requeueForClassification(caseId: number, log: FastifyBaseLogger):
       next_attempt_at: new Date().toISOString(),
       doc_type: null,
       confidence: null,
-      extracted: null,
+      legible: null,
+      issues: null,
+      summary: null,
       updated_at: new Date().toISOString(),
     })
     .eq('case_id', caseId)
-    .in('status', ['ready', 'failed']);
+    .is('duplicate_of', null)
+    .in('kind', ['image', 'document'])
+    .in('status', ['ready', 'failed', 'skipped']);
   if (error) log.error({ err: error, caseId }, 'cases: no se pudieron reencolar los documentos');
 }
 
