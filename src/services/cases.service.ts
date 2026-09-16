@@ -190,7 +190,7 @@ export const casesService = {
     const now = new Date().toISOString();
     const { error } = await supabase
       .from('chat_cases')
-      .update({ status: 'cancelled', closed_at: now, updated_at: now, sync_status: 'pending' })
+      .update({ status: 'cancelled', closed_at: now, updated_at: now, sync_status: 'pending', sync_next_attempt_at: now })
       .eq('id', row.id);
     if (error) throw error;
     log.info({ caseId: row.id, reason: input.reason }, 'cases: caso cancelado');
@@ -237,7 +237,15 @@ export const casesService = {
 
     const { error: updateError } = await supabase
       .from('chat_cases')
-      .update({ evaluation, status, completed_at, sync_status: 'pending', updated_at: new Date().toISOString() })
+      // Un cambio siempre vuelve a habilitar el sync, aunque se hayan agotado los intentos.
+      .update({
+        evaluation,
+        status,
+        completed_at,
+        sync_status: 'pending',
+        sync_next_attempt_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', caseId);
     if (updateError) throw updateError;
 

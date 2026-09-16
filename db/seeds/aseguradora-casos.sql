@@ -138,3 +138,20 @@ cross join (values
 on conflict (agent_id, key) do update
   set label = excluded.label, description = excluded.description, definition = excluded.definition,
       position = excluded.position, active = true, updated_at = now();
+
+-- 4. Destino en Google (opcional) ---------------------------------------------
+--
+-- Requiere que el cliente tenga Google Drive conectado en Integraciones (toolkit googledrive de
+-- Composio). Los ids salen de las URLs:
+--   carpeta  https://drive.google.com/drive/folders/<drive_parent_id>
+--   sheet    https://docs.google.com/spreadsheets/d/<sheet_id>/edit
+-- sheet_tab es el nombre exacto de la pestaña. sheet_columns en null usa las columnas por
+-- default (Número, Tipo, Estado, Abierto, Completado, Falta, Carpeta y un dato por columna).
+--
+-- update public.agent_case_settings
+-- set drive_parent_id = '<id de la carpeta>',
+--     sheet_id        = '<id del sheet>',
+--     sheet_tab       = 'Reclamos',
+--     sheet_columns   = null,
+--     updated_at      = now()
+-- where agent_id = 0;  -- ← agent_id

@@ -341,9 +341,14 @@ export const composioService = {
     toolkit: string,
     slug: string,
     args: Record<string, unknown>,
+    // Para quien ya verificó la conexión y encadena varias llamadas (el sync de casos): evita
+    // una consulta a Composio por cada una.
+    options: { skipConnectionCheck?: boolean } = {},
   ): Promise<Record<string, unknown>> {
-    const { connected } = await this.connectionStatus(clientId, toolkit);
-    if (!connected) throw new ComposioNotConnectedError(clientId, toolkit);
+    if (!options.skipConnectionCheck) {
+      const { connected } = await this.connectionStatus(clientId, toolkit);
+      if (!connected) throw new ComposioNotConnectedError(clientId, toolkit);
+    }
 
     const res = await client().tools.execute(slug, {
       userId: uid(clientId),

@@ -15,7 +15,10 @@ Plan de implementación.
   aplicada; numeración y "un caso activo por chat" verificados en la base. 24 tests en
   backend-js y 70 en agente-tilegra. Hay un seed con la configuración de la aseguradora en
   `db/seeds/aseguradora-casos.sql`. Ver "Implementación de la fase 3".
-- Fases 4 a 7: sin empezar.
+- **Fase 4 (sync a Drive y Sheets): CÓDIGO HECHO, SIN PROBAR CONTRA GOOGLE.** Migración
+  `chat_cases_sync.sql` aplicada. 31 tests en backend-js (incluye nombres, columnas y filas del
+  Sheet). Ver "Implementación de la fase 4".
+- Fases 5 a 7: sin empezar.
 
 Primer cliente: una aseguradora de autos que necesita que el agente tome reclamos, pida la
 documentación según el tipo de siniestro, valide lo que llega, lo suba a una carpeta de Drive y
@@ -579,7 +582,7 @@ muestra. El agente sigue funcionando: la conversación y la validación no depen
    `documentos_del_chat`, PDFs escaneados.
 3. **Casos — CÓDIGO HECHO (ver Estado):** tablas de configuración, esquema Zod, evaluador con tests, `cases.service`, rutas,
    tools de escritura, procesamiento inline con timeout, clasificación con catálogo.
-4. **Sync:** Drive y Sheets, job de sync, idempotencia.
+4. **Sync — CÓDIGO HECHO (ver Estado):** Drive y Sheets, job de sync, idempotencia.
 5. **Turno proactivo** cuando el worker termina después del turno.
 6. **Dashboard:** editor de casos, panel en la bandeja, plantilla.
 7. **Piloto con la aseguradora:** cargar su configuración, probar con documentos reales de
@@ -690,6 +693,44 @@ Cambios respecto del diseño original, todos para no depender de que el modelo h
 3. Mandar una foto de una cédula con otra patente → el turno siguiente tiene que decir que no
    coincide.
 4. Mandar todo lo que falta → `chat_cases.status = complete` y el agente avisa.
+
+---
+
+## Implementación de la fase 4
+
+- `db/migrations/chat_cases_sync.sql`: `sync_attempts`, `sync_next_attempt_at`, `sync_locked_at`,
+  `sync_error`, `synced_at` en `chat_cases`.
+- `src/services/case-sync.service.ts` + `src/jobs/cases-sync.job.ts` (cada 30 s,
+  `CASES_SYNC_CRON`). Casos de a uno y en serie: la cuota de Google es por cuenta del cliente.
+- `src/services/case-sync.format.ts` (+ test): nombres, columnas y valores del Sheet, sin I/O.
+- `composioService.execute` acepta `skipConnectionCheck`: la conexión se verifica una vez por caso.
+
+Cómo se cuida cada paso:
+
+| Paso | Idempotencia y control |
+|---|---|
+| Claim | `sync_locked_at` con update condicionado; el lock vence a los 10 min |
+| Terminar | `synced` solo si `updated_at` no cambió durante el sync; si cambió, queda pendiente |
+| Carpeta | Se busca por número en la carpeta padre antes de crear. Si `CREATE_FOLDER` devuelve otro padre (id inválido), falla con mensaje en vez de dejarla en la raíz |
+| Archivo | El nombre (`licencia_2.jpg`) se guarda ANTES de subir; antes de subir se busca por ese nombre |
+| Documentos en revisión | No se suben hasta que terminan (necesitan su tipo para el nombre); su reevaluación vuelve a disparar el sync |
+| Duplicados | No se suben (`sync_status = none`) |
+| Sheet | Encabezados por nombre (las columnas que faltan se agregan al final); fila por número; escritura celda por celda con `RAW` (sin fórmulas) y sin tocar otras columnas |
+| Fallas | Backoff de 1 min × 2^n hasta 1 h; a los 8 intentos para, y cualquier cambio del caso lo rehabilita. `sync_error` queda legible para el dashboard |
+
+Limitación conocida: si un documento ya subido se reclasifica (cambio de tipo de caso), en Drive
+conserva el nombre anterior.
+
+### Para probarlo
+
+1. Cliente con Google Drive conectado en Integraciones.
+2. Configurar destino con el bloque 4 de `db/seeds/aseguradora-casos.sql` (carpeta y Sheet de
+   prueba, con una pestaña creada).
+3. Abrir un caso y mandar documentos. En ≤ 30 s: carpeta `SIN-2026-00000N - <tipo>`, archivos
+   nombrados por tipo y una fila en el Sheet. Mover columnas u ordenar el Sheet y mandar otro
+   documento: tiene que actualizar la misma fila.
+4. Desconectar Google: `chat_cases.sync_status = failed` con `sync_error` legible. Reconectar y
+   mandar un dato: se sincroniza.
 
 ---
 
