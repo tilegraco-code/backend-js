@@ -27,7 +27,7 @@ export type EvaluableDocument = {
 
 export type CaseEvaluation = {
   complete: boolean;
-  missing_data: { key: string; label: string; hint?: string }[];
+  missing_data: { key: string; label: string; type: string; options?: string[]; hint?: string }[];
   invalid_data: { key: string; label: string; message: string }[];
   missing_documents: { type: string; label: string; hint?: string; have: number; need: number }[];
   illegible: { document_id: number; type: string; label: string; issues: string[] }[];
@@ -63,7 +63,15 @@ export function evaluateCase(
   for (const field of definition.data) {
     const value = data[field.key];
     if (isEmpty(value)) {
-      if (field.required) evaluation.missing_data.push({ key: field.key, label: field.label, hint: field.hint });
+      if (field.required) {
+        evaluation.missing_data.push({
+          key: field.key,
+          label: field.label,
+          type: field.type,
+          ...(field.options ? { options: field.options } : {}),
+          ...(field.hint ? { hint: field.hint } : {}),
+        });
+      }
       continue;
     }
     const problem = validateValue(field, value);
