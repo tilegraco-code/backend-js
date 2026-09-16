@@ -27,7 +27,7 @@ export const dataFieldSchema = z
     hint: z.string().optional(),
   })
   .refine((f) => f.type !== 'enum' || (f.options?.length ?? 0) > 0, {
-    message: 'Un campo enum necesita options',
+    message: 'Un dato de tipo opciones necesita al menos una opción',
     path: ['options'],
   });
 export type DataField = z.infer<typeof dataFieldSchema>;
