@@ -36,7 +36,7 @@ function caso(overrides: Partial<SyncableCase> = {}): SyncableCase {
     data: { patente: 'AB123CD', fecha_siniestro: '2026-09-10', hubo_heridos: false },
     evaluation: {
       complete: false,
-      missing_data: [{ key: 'lugar', label: 'Lugar' }],
+      missing_data: [{ key: 'lugar', label: 'Lugar', type: 'string' }],
       invalid_data: [],
       missing_documents: [{ type: 'dni', label: 'DNI', have: 1, need: 2 }],
       illegible: [{ document_id: 1, type: 'licencia', label: 'Licencia', issues: [] }],

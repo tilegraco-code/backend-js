@@ -45,6 +45,12 @@ describe('sanitizeData', () => {
     assert.deepEqual(ignored, []);
   });
 
+  test('acepta el nombre del dato en vez de la clave, si no es ambiguo', () => {
+    const { data, ignored } = sanitizeData(definition, {}, { 'Fecha': '11/08/2026', Heridos: 'no', fecha_del_robo: 'x' });
+    assert.deepEqual(data, { fecha_siniestro: '2026-08-11', hubo_heridos: false });
+    assert.deepEqual(ignored, ['fecha_del_robo']);
+  });
+
   test('ignora claves que no existen y lo informa', () => {
     const { data, ignored } = sanitizeData(definition, {}, { color: 'rojo', patente: 'AB123CD' });
     assert.deepEqual(data, { patente: 'AB123CD' });

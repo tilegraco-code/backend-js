@@ -46,6 +46,11 @@ export type CaseView = {
   label: string;
   status: CaseStatus;
   data: { key: string; label: string; value: unknown }[];
+  /**
+   * Todos los datos que admite el tipo de caso, con su clave exacta. El agente los necesita para
+   * guardar con actualizar_datos_caso: sin la clave la adivina y el dato se descarta.
+   */
+  fields: { key: string; label: string; type: string; options?: string[]; required: boolean }[];
   evaluation: CaseEvaluation;
   opened_at: string;
   completed_at: string | null;
@@ -444,18 +449,28 @@ export function sanitizeData(
     if (fields.has(key)) data[key] = value;
   }
 
+  // El modelo a veces usa el nombre del dato en vez de la clave ("fecha_del_robo" por
+  // "fecha_siniestro"). Si coincide sin ambigüedad con la clave o el nombre, se acepta.
+  const loose = (s: string) => normalize(s).replace(/[^A-Z0-9]/g, '');
+  const resolve = (key: string): DataField | undefined => {
+    const exact = fields.get(key);
+    if (exact) return exact;
+    const matches = definition.data.filter((f) => loose(f.key) === loose(key) || loose(f.label) === loose(key));
+    return matches.length === 1 ? matches[0] : undefined;
+  };
+
   const ignored: string[] = [];
   for (const [key, value] of Object.entries(incoming ?? {})) {
-    const field = fields.get(key);
+    const field = resolve(key);
     if (!field) {
       ignored.push(key);
       continue;
     }
     if (value == null || (typeof value === 'string' && value.trim() === '')) {
-      delete data[key];
+      delete data[field.key];
       continue;
     }
-    data[key] = coerce(field, value);
+    data[field.key] = coerce(field, value);
   }
   return { data, ignored };
 }
@@ -504,6 +519,13 @@ function toView(row: CaseRow, evaluation: CaseEvaluation): CaseView {
     data: fields
       .filter((f) => row.data?.[f.key] != null)
       .map((f) => ({ key: f.key, label: f.label, value: row.data[f.key] })),
+    fields: fields.map((f) => ({
+      key: f.key,
+      label: f.label,
+      type: f.type,
+      ...(f.options ? { options: f.options } : {}),
+      required: f.required,
+    })),
     evaluation,
     opened_at: row.opened_at,
     completed_at: row.completed_at,
