@@ -11,6 +11,7 @@
 // parámetro (`FetchBytes`) y todo lo de abajo es común.
 import { FastifyBaseLogger } from 'fastify';
 import { supabase } from '../lib/supabase';
+import { chatDocumentsService, sha256 } from './chat-documents.service';
 
 const BUCKET = 'chat-attachments';
 
@@ -216,13 +217,22 @@ export async function ingestAttachments(
         continue;
       }
 
-      stored.push({
+      const item: StoredAttachment = {
         kind: kindFromMime(mime),
         mime,
         name: attachment.name,
         size: bytes.byteLength,
         path,
-      });
+      };
+      stored.push(item);
+
+      // Registro para que el agente pueda consultarlo después del turno (ver
+      // docs/documentos-y-casos-plan.md). Va acá y no en cada canal para que ninguno pueda
+      // olvidarse. No lanza: un registro fallido no le quita el adjunto al turno.
+      await chatDocumentsService.register(
+        { clientId, chatId, messageId, idx: index, stored: item, sha256: sha256(bytes) },
+        log,
+      );
     } catch (e) {
       log.error({ err: e, messageId, providerId: attachment.providerId }, 'adjuntos: ingesta falló');
     }
