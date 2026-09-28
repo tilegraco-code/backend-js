@@ -94,6 +94,29 @@ export const unipileApiService = {
    * Desconecta y elimina una cuenta en Unipile. Idempotente desde el punto de
    * vista del CRON: un 404 (cuenta ya inexistente) se trata como éxito.
    */
+  /**
+   * Teléfono real de un contacto de WhatsApp (ej. "+5491122334455").
+   *
+   * WhatsApp ahora identifica a muchos contactos con un LID ("194776800465107@lid") en vez
+   * del número, y el webhook solo trae ese LID. El número sí viene en el attendee, en
+   * `specifics.phone_number`. Null si Unipile no lo tiene.
+   */
+  async getAttendeePhone(attendeeId: string): Promise<string | null> {
+    const { dsn, apiKey } = getCreds();
+    const url = `${dsn.replace(/\/$/, '')}/api/v1/chat_attendees/${encodeURIComponent(attendeeId)}`;
+    const res = await fetch(url, { headers: { 'X-API-KEY': apiKey, accept: 'application/json' } });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Unipile getAttendee ${res.status}: ${errText}`);
+    }
+    const body = (await res.json()) as {
+      public_identifier?: string | null;
+      specifics?: { phone_number?: string | null } | null;
+    };
+    const phone = body.specifics?.phone_number ?? body.public_identifier ?? null;
+    return phone && /\d/.test(phone) && !phone.includes('@lid') ? phone : null;
+  },
+
   async deleteAccount(accountId: string): Promise<void> {
     const { dsn, apiKey } = getCreds();
     const url = `${dsn.replace(/\/$/, '')}/api/v1/accounts/${encodeURIComponent(accountId)}`;
