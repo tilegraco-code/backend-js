@@ -11,7 +11,7 @@ import { LETTERS, type Campaign, type Letter } from './campaign.types';
 import { viernes2347 } from './campaigns/viernes-2347';
 import { computeScore, initialVars, parseChoice, renderScene, shuffledOrder, step, timeMultiplier } from './engine';
 import { gameStore, type GameEvent, type PathEntry, type Player, type Session } from './game.store';
-import { isReady, isRematch, localDay, parseEmail, parseName, phoneFromProviderId, text } from './messages';
+import { isReady, localDay, parseEmail, parseName, phoneFromProviderId, text } from './messages';
 
 const CAMPAIGN: Campaign = viernes2347;
 /** Una partida que sigue abierta después de esto queda `abandoned` y no entra al ranking. */
@@ -89,25 +89,13 @@ async function newSession(
   });
 }
 
-async function dailyLimitReached(event: GameEvent, playerId: number): Promise<boolean> {
-  const since = new Date(Date.now() - 36 * 3600_000).toISOString();
-  const today = localDay(new Date(), event.timezone);
-  const rows = await gameStore.startedSince(playerId, event.id, since);
-  const count = rows.filter((r) => localDay(new Date(r.started_at), event.timezone) === today).length;
-  return count >= event.max_sessions_per_day;
-}
-
 // ─── Pasos ───
 
 async function sendIntro(input: GameIncoming, log: FastifyBaseLogger): Promise<void> {
   await sendAll(input, CAMPAIGN.intro, log);
 }
 
-async function startPlaying(event: GameEvent, session: Session, log: FastifyBaseLogger): Promise<void> {
-  if (await dailyLimitReached(event, session.player_id)) {
-    await sendAll(session_(session), [text.dailyLimit(event.max_sessions_per_day)], log);
-    return;
-  }
+async function startPlaying(session: Session, log: FastifyBaseLogger): Promise<void> {
   const order = shuffledOrder(Math.random);
   const vars = initialVars();
   const scene = CAMPAIGN.scenes[CAMPAIGN.start];
@@ -222,8 +210,7 @@ async function finish(
   if (stats) messages.push(stats);
 
   const igUrl = process.env.GAME_INSTAGRAM_URL;
-  const publicUrl = process.env.PUBLIC_URL?.replace(/\/$/, '');
-  messages.push(igUrl && publicUrl ? text.instagram(`${publicUrl}/g/ig/${session.id}`) : text.afterGame);
+  if (igUrl) messages.push(text.instagram(igUrl));
 
   await sendAll(session_(session), messages, log);
 }
@@ -289,11 +276,13 @@ async function handle(input: GameIncoming, log: FastifyBaseLogger): Promise<void
     } else if (!player.email) {
       await newSession(event, player, input, 'registering_email');
       await sendAll(input, [text.askEmail(player.name.split(' ')[0])], log);
-    } else if (!session || session.event_id !== event.id || isRematch(input.text)) {
+    } else if ((await gameStore.playedCount(player.id, event.id)) < 1 + player.extra_plays) {
+      // Una partida por persona y por evento. Desde el stand se puede habilitar otra
+      // sumando `extra_plays` al jugador (ver docs/juego-stand-plan.md).
       await newSession(event, player, input, 'intro');
       await sendIntro(input, log);
     } else {
-      await sendAll(input, [text.afterGame], log);
+      await sendAll(input, [text.alreadyPlayed], log);
     }
     return;
   }
@@ -328,7 +317,7 @@ async function handle(input: GameIncoming, log: FastifyBaseLogger): Promise<void
       return;
     }
     case 'intro':
-      if (isReady(input.text)) await startPlaying(event, s, log);
+      if (isReady(input.text)) await startPlaying(s, log);
       else await sendAll(input, [text.notReady], log);
       return;
     case 'playing':

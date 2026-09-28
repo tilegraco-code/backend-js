@@ -1,7 +1,7 @@
 // Tests de los helpers de registro del juego. Correr con `pnpm test`.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { isReady, isRematch, localDay, parseEmail, parseName, phoneFromProviderId } from './messages';
+import { isReady, localDay, parseEmail, parseName, phoneFromProviderId } from './messages';
 
 describe('registro del juego', () => {
   test('parseName arma el nombre del ranking', () => {
@@ -23,13 +23,10 @@ describe('registro del juego', () => {
     for (const input of ['sofia', 'sofia@mail', 'a b@c.com']) assert.equal(parseEmail(input), null, input);
   });
 
-  test('isReady e isRematch', () => {
+  test('isReady', () => {
     assert.ok(isReady('Listo!'));
     assert.ok(isReady('dale'));
     assert.ok(!isReady('a'));
-    assert.ok(isRematch('Revancha'));
-    assert.ok(isRematch('Iniciar partida'));
-    assert.ok(!isRematch('gracias'));
   });
 
   test('phoneFromProviderId y localDay', () => {

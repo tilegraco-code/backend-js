@@ -20,9 +20,9 @@ Reglas de diseño:
 | 04 | `intro` | Dos mensajes: la premisa y la ficha del negocio. "Mandá *listo* para empezar" |
 | 05 | `playing` | 8 preguntas; cada una trae un mensaje de la clienta y las opciones A, B y C |
 | 06 | `finished` | Final, puntaje, puesto, "así lo haría un agente de Tilegra" y estadísticas. La TV se actualiza |
-| 07 | `finished` | Invitación a Instagram con link trackeado. "Mandá *revancha* para jugar de nuevo" |
+| 07 | `finished` | Invitación a Instagram (link directo al perfil) |
 
-Un jugador que vuelve salta directo al paso 04.
+**Una partida por persona y por evento.** Si alguien escribe después de jugar, recibe "Ya jugaste tu partida". Para dejarlo jugar otra vez, ver *Reiniciar la partida de alguien* en la sección 9.
 
 ---
 
@@ -109,7 +109,8 @@ create schema game;
 
 game.events
   id, name, starts_at, ends_at, timezone default 'America/Argentina/Buenos_Aires',
-  max_sessions_per_day int default 5, prize_count int default 3, active bool
+  prize_count int default 3, active bool
+  -- max_sessions_per_day: sin uso desde que hay una partida por persona
 
 game.players
   id, phone text unique, name text, display_name text,  -- "Sofía R."
@@ -126,7 +127,10 @@ game.sessions
   path jsonb,                        -- [{node, option, sent_at, answered_at, ms}] → decisiones y tiempos
   scene_sent_at timestamptz(3),      -- cuándo salió la escena actual (arranca el reloj)
   ending text, score int, total_ms int,   -- total_ms = Σ ms de path
-  started_at, ended_at, ig_clicked_at
+  started_at, ended_at
+  -- ig_clicked_at: sin uso (el link a Instagram va directo al perfil)
+
+game.players.extra_plays int default 0   -- partidas extra habilitadas desde el stand
 
 game.leaderboard      -- view: mejor sesión finished por jugador y día, sin hidden;
                       -- orden: score desc, total_ms asc, ended_at asc
@@ -145,7 +149,6 @@ game.choice_stats     -- view: % de cada opción por escena y día (estadística
 - En `unipile-webhook.service.ts`, después de persistir el mensaje: si `account_id === GAME_UNIPILE_ACCOUNT_ID`, el mensaje va al motor del juego en vez de a `dispatchToRuntime`. Los mensajes resultantes salen con `sendOutgoing()` en orden y con una pausa corta entre cada uno. No pasa por `recordAgentUse`, casos, escalación ni follow-up.
 - El chat queda en `unipile_chats` de Tilegra, así que "cada jugador queda con una conversación abierta" se cumple solo.
 - Job cada 30 s que marca `abandoned` las partidas de más de 5 minutos.
-- `GET /g/ig/:sessionId`: registra `ig_clicked_at` y redirige a Instagram.
 
 ### dashboard-tilegra
 - **`app/game-ranking/page.tsx`**: pública, pensada para 1080p a pantalla completa, con la estética del PDF. Muestra el top 10 del día con animación cuando alguien entra o sube, el QR grande, el contador de partidas de hoy, "Martín G. acaba de llegar a 🏆 Venta perfecta", la decisión más polémica del día y el aviso de cierre ("Quedan 45 min · premio a los 3 primeros").
@@ -164,7 +167,7 @@ game.choice_stats     -- view: % de cada opción por escena y día (estadística
 
 1. **Campaña + motor** en backend-js, con los tests de grafo y el recorrido de los 2.999 caminos. Se prueba sin WhatsApp.
 2. **Schema `game`**: migración y views.
-3. **Cableado**: webhook → motor → `sendOutgoing`, más el job de timeout y `/g/ig`.
+3. **Cableado**: webhook → motor → `sendOutgoing`, más el job de timeout.
 4. **Dashboard `/game-ranking`**: página + API.
 5. **Ensayo general**: 5 o 6 personas juegan a la vez, se pulen textos y se calibran los puntos.
 
@@ -194,7 +197,6 @@ game.choice_stats     -- view: % de cada opción por escena y día (estadística
   - El reloj de cada respuesta va del envío confirmado de la escena a la llegada del webhook.
   - Ignora las respuestas que llegan antes de que salga la escena.
 - `src/jobs/game-timeout.job.ts`: cada 30 s cierra las partidas de más de 5 minutos.
-- `src/routes/game.route.ts`: `GET /g/ig/:sessionId` registra el click y redirige a Instagram.
 - `unipile-webhook.service.ts` + `routes/webhooks/unipile.route.ts`:
   - si `account_id === GAME_UNIPILE_ACCOUNT_ID`, el mensaje se guarda en la bandeja como siempre y después va al juego, nunca al runtime;
   - la hora de llegada se toma al entrar al handler.
@@ -214,12 +216,22 @@ game.choice_stats     -- view: % de cada opción por escena y día (estadística
    - supabase-js lo necesita para `.schema('game')`.
    - No expone datos: `anon` y `authenticated` no tienen permisos sobre el schema.
 3. **Conectar el WhatsApp del juego** como inbox de la cuenta de Tilegra, sin agente asignado.
-4. **Variables de backend-js:** `GAME_UNIPILE_ACCOUNT_ID` (el `account_id` del paso 3), `GAME_INSTAGRAM_URL` y `PUBLIC_URL`.
+4. **Variables de backend-js:** `GAME_UNIPILE_ACCOUNT_ID` (el `account_id` del paso 3), `GAME_INSTAGRAM_URL` (se manda tal cual al final de la partida).
 5. **QR:**
    - generar el QR de `https://wa.me/<numero>?text=Iniciar%20partida` y guardarlo como `dashboard-tilegra/public/game-qr.png`;
    - es el mismo QR del banner;
    - opcional: `NEXT_PUBLIC_GAME_WA_NUMBER` para mostrar el número debajo.
 6. **Antes de la convención:** crear el evento real (`name`, `ends_at`, `prize_count`), activarlo y desactivar "Ensayo general".
+
+### Reiniciar la partida de alguien
+Cada persona juega una vez por evento. Para habilitarle otra (porque quiere reintentar o porque tuvo un problema), se le suma una partida extra en Supabase → SQL Editor:
+```sql
+update game.players set extra_plays = extra_plays + 1 where phone like '%<últimos dígitos>';
+```
+- No se borra nada: su partida anterior queda guardada y en el ranking cuenta la mejor.
+- Si la partida que falló está a medias (`playing`), el job la cierra sola a los 5 minutos. Para liberarla antes: `update game.sessions set status = 'abandoned', ended_at = now() where status = 'playing' and player_id = (select id from game.players where phone like '%<dígitos>');`
+- Si hay que sacar del ranking un puntaje inválido: `delete from game.sessions where id = '<id>';`
+- Borrar todo después del ensayo: `delete from game.sessions; delete from game.players;`
 
 ### Pendiente / fuera de alcance
 - Moderación desde una UI: por ahora, `update game.players set hidden = true where ...`.
