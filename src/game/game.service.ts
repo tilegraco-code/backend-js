@@ -7,6 +7,7 @@
 // los empates mucho más probables.
 import type { FastifyBaseLogger } from 'fastify';
 import { outgoingMessageService } from '../services/outgoing-message.service';
+import { unipileApiService } from '../services/unipile-api.service';
 import { LETTERS, type Campaign, type Letter } from './campaign.types';
 import { viernes2347 } from './campaigns/viernes-2347';
 import { computeScore, initialVars, parseChoice, renderScene, shuffledOrder, step, timeMultiplier } from './engine';
@@ -25,11 +26,38 @@ export type GameIncoming = {
   clientId: number;
   chatId: string;
   providerId: string;
+  /** Attendee de Unipile: de ahí sale el teléfono real cuando WhatsApp manda un LID. */
+  attendeeId: string;
   senderName: string | null;
   text: string;
   /** Date.now() cuando llegó el webhook: el reloj de la respuesta para acá. */
   receivedAt: number;
 };
+
+// ─── Teléfono ───
+// WhatsApp identifica a muchos contactos con un LID ("194776800465107@lid"), que no es el
+// número. En ese caso se le pide el número a Unipile una vez y queda en memoria.
+const lidPhones = new Map<string, string>();
+
+async function resolvePhone(input: GameIncoming, log: FastifyBaseLogger): Promise<string> {
+  if (!input.providerId.endsWith('@lid')) return phoneFromProviderId(input.providerId);
+
+  const cached = lidPhones.get(input.providerId);
+  if (cached) return cached;
+  try {
+    const phone = await unipileApiService.getAttendeePhone(input.attendeeId);
+    if (phone) {
+      const digits = phone.replace(/\D/g, '');
+      lidPhones.set(input.providerId, digits);
+      return digits;
+    }
+  } catch (err) {
+    log.error({ err, attendeeId: input.attendeeId }, 'juego: no se pudo resolver el teléfono del LID');
+  }
+  // Sin número: se identifica por el LID, que igual es estable para esa persona. No se
+  // cachea, así el próximo mensaje vuelve a intentar.
+  return phoneFromProviderId(input.providerId);
+}
 
 // ─── Cola por chat ───
 // backend-js corre en una sola instancia. Si el jugador manda dos mensajes seguidos, los dos
@@ -257,8 +285,20 @@ async function handle(input: GameIncoming, log: FastifyBaseLogger): Promise<void
     return;
   }
 
-  const phone = phoneFromProviderId(input.providerId);
+  const phone = await resolvePhone(input, log);
   let player = await gameStore.findPlayer(phone);
+
+  // Jugador guardado con el LID (antes de resolverse el número, o porque Unipile no lo
+  // devolvió): se le corrige el teléfono en vez de crear un jugador nuevo.
+  const lidDigits = input.providerId.endsWith('@lid') ? phoneFromProviderId(input.providerId) : null;
+  if (!player && lidDigits && lidDigits !== phone) {
+    const byLid = await gameStore.findPlayer(lidDigits);
+    if (byLid) {
+      await gameStore.updatePlayer(byLid.id, { phone });
+      player = { ...byLid, phone };
+    }
+  }
+
   if (!player) {
     player = await gameStore.createPlayer(phone, input.senderName);
     await newSession(event, player, input, 'registering_name');

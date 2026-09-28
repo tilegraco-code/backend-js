@@ -279,6 +279,7 @@ export const unipileWebhookService = {
                 clientId,
                 chatId: chat_id,
                 providerId: sender.attendee_provider_id,
+                attendeeId: sender.attendee_id,
                 senderName: sender.attendee_name ?? null,
                 text: message,
               },
