@@ -25,10 +25,9 @@ export const text = {
   invalidChoice: 'Respondé con *A*, *B* o *C* 🙂',
   remember: (who: string) => `_${who} va a recordar esto._`,
   lostTrust: '_Carla dejó de responder._',
-  afterGame: 'Mandá *revancha* para jugar de nuevo 🔁',
-  dailyLimit: (max: number) => `Llegaste a las ${max} partidas de hoy 🙌 Tu mejor puntaje ya está en el ranking. ¡Volvé mañana!`,
+  alreadyPlayed: 'Ya jugaste tu partida 🙌 Tu puntaje está en el ranking de la TV del stand. ¡Gracias por jugar!',
   noEvent: 'El juego no está activo en este momento. ¡Te esperamos en el stand de Tilegra!',
-  timeout: '⏱ Se terminó el tiempo de esta partida. Mandá *revancha* para intentarlo de nuevo.',
+  timeout: '⏱ Se terminó el tiempo de la partida. Si tuviste algún problema, acercate al stand de Tilegra.',
   error: 'Uy, algo falló de nuestro lado 😅 Mandá tu respuesta de nuevo en un ratito.',
 
   ending: (e: Ending) => [`🏁 *Final: ${e.emoji} ${e.title}*`, '', e.story].join('\n'),
@@ -48,7 +47,7 @@ export const text = {
 
   stats: (items: string[]) => ['📊 *Hoy en el stand:*', ...items.map((i) => `• ${i}`)].join('\n'),
 
-  instagram: (url: string) => ['Si te gustó, seguinos en Instagram 👇', url, '', 'Mandá *revancha* para jugar de nuevo 🔁'].join('\n'),
+  instagram: (url: string) => `Si te gustó, seguinos en Instagram 👇\n${url}`,
 };
 
 export { nf as formatNumber };
@@ -88,10 +87,6 @@ export function parseEmail(input: string): string | null {
 
 export function isReady(input: string): boolean {
   return /^(listo|lista|ya|dale|empezar|empecemos|start|go|arranquemos|vamos)\b/i.test(input.trim());
-}
-
-export function isRematch(input: string): boolean {
-  return /^(revancha|otra|de nuevo|jugar|iniciar partida|volver a jugar)\b/i.test(input.trim());
 }
 
 /** "5491122334455@s.whatsapp.net" → "5491122334455". */

@@ -8,7 +8,6 @@ export type GameEvent = {
   id: number;
   name: string;
   timezone: string;
-  max_sessions_per_day: number;
   prize_count: number;
 };
 
@@ -18,6 +17,8 @@ export type Player = {
   name: string | null;
   display_name: string | null;
   email: string | null;
+  /** Partidas extra habilitadas a mano (reinicio desde el stand). Base: una por evento. */
+  extra_plays: number;
 };
 
 export type SessionStatus =
@@ -70,7 +71,7 @@ export const gameStore = {
   async activeEvent(): Promise<GameEvent | null> {
     const { data, error } = await db()
       .from('events')
-      .select('id, name, timezone, max_sessions_per_day, prize_count')
+      .select('id, name, timezone, prize_count')
       .eq('active', true)
       .maybeSingle();
     if (error) fail('activeEvent', error);
@@ -80,7 +81,7 @@ export const gameStore = {
   async findPlayer(phone: string): Promise<Player | null> {
     const { data, error } = await db()
       .from('players')
-      .select('id, phone, name, display_name, email')
+      .select('id, phone, name, display_name, email, extra_plays')
       .eq('phone', phone)
       .maybeSingle();
     if (error) fail('findPlayer', error);
@@ -91,7 +92,7 @@ export const gameStore = {
     const { data, error } = await db()
       .from('players')
       .insert({ phone, whatsapp_name: whatsappName })
-      .select('id, phone, name, display_name, email')
+      .select('id, phone, name, display_name, email, extra_plays')
       .single();
     if (error) fail('createPlayer', error);
     return data;
@@ -134,16 +135,16 @@ export const gameStore = {
     if (error) fail('updateSession', error);
   },
 
-  /** Partidas empezadas (con reloj) por el jugador desde `since`. */
-  async startedSince(playerId: number, eventId: number, since: string): Promise<{ started_at: string }[]> {
-    const { data, error } = await db()
+  /** Partidas jugadas (terminadas o vencidas) por el jugador en el evento. */
+  async playedCount(playerId: number, eventId: number): Promise<number> {
+    const { count, error } = await db()
       .from('sessions')
-      .select('started_at')
+      .select('id', { count: 'exact', head: true })
       .eq('player_id', playerId)
       .eq('event_id', eventId)
-      .gte('started_at', since);
-    if (error) fail('startedSince', error);
-    return data ?? [];
+      .in('status', ['finished', 'abandoned']);
+    if (error) fail('playedCount', error);
+    return count ?? 0;
   },
 
   async leaderboard(eventId: number, day: string): Promise<LeaderboardRow[]> {
@@ -184,12 +185,4 @@ export const gameStore = {
     return (data ?? []) as Session[];
   },
 
-  async markIgClick(sessionId: string): Promise<void> {
-    const { error } = await db()
-      .from('sessions')
-      .update({ ig_clicked_at: new Date().toISOString() })
-      .eq('id', sessionId)
-      .is('ig_clicked_at', null);
-    if (error) fail('markIgClick', error);
-  },
 };
