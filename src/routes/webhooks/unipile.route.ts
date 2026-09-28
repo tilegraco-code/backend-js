@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { unipileWebhookAuth } from '../../middlewares/unipile-webhook-auth.middleware';
 import { unipileWebhookService } from '../../services/unipile-webhook.service';
 import { dispatchToRuntime } from '../../services/agent-runtime.service';
+import { gameService } from '../../game/game.service';
 
 const okResponseSchema = z
   .object({
@@ -204,6 +205,8 @@ export async function unipileWebhookRoutes(app: FastifyInstance): Promise<void> 
       },
     },
     async (request, reply) => {
+      // Hora de llegada, antes de cualquier I/O: es el fin del reloj de una respuesta del juego.
+      const receivedAt = Date.now();
       const result = await unipileWebhookService.processMessage(request.body, request.log);
 
       if (!result.ok) {
@@ -218,6 +221,14 @@ export async function unipileWebhookRoutes(app: FastifyInstance): Promise<void> 
           unipileWebhookService.runBackground(result, 'whatsapp', log, dispatchToRuntime).catch(() => {
             /* errores ya logueados dentro */
           });
+        });
+      }
+
+      if (result.game) {
+        const game = { ...result.game, receivedAt };
+        const log = request.log;
+        setImmediate(() => {
+          void gameService.handleIncoming(game, log);
         });
       }
 

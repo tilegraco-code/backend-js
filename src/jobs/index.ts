@@ -10,6 +10,7 @@ import { registerMercadolibreQuestionsPollJob } from './mercadolibre-questions-p
 import { registerChatDocumentsProcessJob } from './chat-documents-process.job';
 import { registerCasesSyncJob } from './cases-sync.job';
 import { registerCaseNotifyJob } from './case-notify.job';
+import { registerGameTimeoutJob } from './game-timeout.job';
 
 let tasks: ScheduledTask[] = [];
 
@@ -30,6 +31,7 @@ export function startJobs(log: FastifyBaseLogger): void {
     registerChatDocumentsProcessJob(log),
     registerCasesSyncJob(log),
     registerCaseNotifyJob(log),
+    registerGameTimeoutJob(log),
   ];
   log.info({ count: tasks.length }, 'Cron jobs iniciados');
 }

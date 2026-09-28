@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import { getOwnerEmail } from '../lib/owner-email';
 import { sendCapiEvent } from './meta-capi.service';
 import { forwardToN8n, type N8nForwardPayload } from './n8n-forward';
+import { gameService, type GameIncoming } from '../game/game.service';
 import { unipileApiService } from './unipile-api.service';
 import {
   describeForInbox,
@@ -86,6 +87,8 @@ export const unipileWebhookService = {
     ProcessResult & {
       forward?: { workflowId: number; payload: N8nForwardPayload };
       ingest?: PendingIngest;
+      /** Mensaje para el juego del stand (inbox GAME_UNIPILE_ACCOUNT_ID), sin la hora de llegada. */
+      game?: Omit<GameIncoming, 'receivedAt'>;
     }
   > {
     if (payload.event !== 'message_received') {
@@ -263,6 +266,26 @@ export const unipileWebhookService = {
       isNewMessage && pendingAttachments.length > 0
         ? { clientId, chatId: chat_id, messageId: message_id, attachments: pendingAttachments }
         : undefined;
+
+    // Juego del stand: su inbox no tiene agente. El chat y el mensaje ya quedaron en la
+    // bandeja como cualquier otro; la respuesta la arma el motor del juego, no el runtime.
+    if (gameService.isGameAccount(account_id)) {
+      return {
+        ok: true,
+        ingest,
+        ...(!isOwn && isNewMessage && message
+          ? {
+              game: {
+                clientId,
+                chatId: chat_id,
+                providerId: sender.attendee_provider_id,
+                senderName: sender.attendee_name ?? null,
+                text: message,
+              },
+            }
+          : {}),
+      };
+    }
 
     // Decidir forward a n8n (sin ejecutarlo — eso queda en background del caller)
     if (!isOwn && isNewMessage) {

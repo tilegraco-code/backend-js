@@ -19,6 +19,7 @@ import { chatDocumentsRoutes } from './chat-documents.route';
 import { casesRoutes } from './cases.route';
 import { caseConfigRoutes } from './case-config.route';
 import { metaCapiRoute } from './meta-capi.route';
+import { gameRoutes } from './game.route';
 import { internalTokenAuth } from '../middlewares/auth.middleware';
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
@@ -50,6 +51,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // Tracking de Meta CAPI. `/track` es público (lo pega el navegador); `/server-event`
   // trae su propio internalTokenAuth por-ruta, por eso el plugin va fuera del scope /api.
   await app.register(metaCapiRoute, { prefix: '/api/tracking' });
+
+  // Juego del stand: el link a Instagram lo abre el teléfono del jugador. Público.
+  await app.register(gameRoutes, { prefix: '/g' });
 
   await app.register(
     async (api) => {
