@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabase';
 /** Usos incluidos por cada inbox NO-WEB del cliente. */
 const INCLUDED_USES_PER_INBOX = Number(process.env.USAGE_INCLUDED_PER_INBOX ?? 1750);
 /** Precio en ARS por cada uso por encima del allowance. */
-const PRICE_PER_USE_ARS = Number(process.env.USAGE_PRICE_PER_USE_ARS ?? 14);
+const PRICE_PER_USE_ARS = Number(process.env.USAGE_PRICE_PER_USE_ARS ?? 34);
 
 export type UsageBillingSummary = {
   period: string;

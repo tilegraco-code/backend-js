@@ -8,7 +8,7 @@ Documento de referencia del sistema de cobros: suscripción base con **MercadoPa
 >
 > base_plan          = precio_por_inbox(tier) × inbox_quota
 > documentos_pending = Σ páginas facturables × $100 ARS   (10 páginas gratis por cliente)
-> uso_pending        = Σ usos excedentes × $14 ARS        (1750 usos incluidos por inbox no-WEB)
+> uso_pending        = Σ usos excedentes × $34 ARS        (1750 usos incluidos por inbox no-WEB)
 > ```
 
 ---
@@ -93,7 +93,7 @@ Código: `lib/billing/documentBilling.ts`.
 Cobro medido por **interacciones humano/IA** (`agentuse`) por encima del incluido.
 
 - **Incluido:** `1750` usos **por inbox no-WEB** del cliente (viene de `plan.included_credits`, configurable).
-- **Precio excedente:** `PRICE_PER_USE_ARS = 14` ARS por uso.
+- **Precio excedente:** `PRICE_PER_USE_ARS = 34` ARS por uso.
 - **Reset:** mensual (mes calendario — **Opción A**).
 
 ### Fórmula (por cliente)
@@ -101,7 +101,7 @@ Cobro medido por **interacciones humano/IA** (`agentuse`) por encima del incluid
 allowance     = (inboxes del cliente con provider != 'WEB') × 1750
 total_uses    = filas de agentuse del cliente en el mes calendario
 billable_uses = max(0, total_uses − allowance)
-amount_ars    = billable_uses × 14
+amount_ars    = billable_uses × 34
 ```
 
 - El inbox de **websnippet** (`provider = 'WEB'`) **NO aporta** allowance, pero **sus usos SÍ cuentan**.
@@ -221,7 +221,7 @@ Lo resuelve `reactivateSuspendedInboxes()` en `app/api/webhooks/mercadopago/rout
 - **Allowance por inbox del cliente, NO por link inbox→workflow.** Se descartó el modelo por-workflow porque hay inboxes con `workflow_id` null (ej. INSTAGRAM sin asignar) que hacían sobre-cobrar. Se cuenta a nivel `client_id`.
 - **Opción A (mes calendario):** el excedente del mes cerrado se cobra en la próxima fecha del cliente; puede haber desfase de días. Alternativa futura: Opción B (facturar por ciclo de cada cliente).
 - **Inboxes suspendidos** hoy cuentan para el allowance (se cuentan todos los no-WEB). Si se quiere que un inbox suspendido no otorgue créditos, es una línea en `client_inbox_allowance()`.
-- **El precio del excedente ($14)** vive en dos lugares: `USAGE_PRICE_PER_USE_ARS` (backend) y una constante en la UI de Usage. Hoy coinciden; conviene unificar en fase 2.
+- **El precio del excedente ($34)** vive en dos lugares: `USAGE_PRICE_PER_USE_ARS` (backend) y una constante en la UI de Usage. Hoy coinciden; conviene unificar en fase 2.
 
 ---
 
@@ -232,7 +232,7 @@ Lo resuelve `reactivateSuspendedInboxes()` en `app/api/webhooks/mercadopago/rout
 USAGE_BILLING_DRY_RUN=true        # arrancar en dry-run la primera corrida
 USAGE_BILLING_CRON=0 14 1 * *     # opcional (default: día 1, 14:00 UTC)
 # USAGE_INCLUDED_PER_INBOX=1750   # opcional override
-# USAGE_PRICE_PER_USE_ARS=14      # opcional override
+# USAGE_PRICE_PER_USE_ARS=34      # opcional override
 DASHBOARD_URL=https://app.tilegra.com   # requerido (a dónde pega el sync)
 INTERNAL_API_KEY=...              # requerido, MISMO valor que el dashboard
 SUPABASE_URL=... / SUPABASE_SERVICE_ROLE_KEY=...
