@@ -98,31 +98,27 @@ async function getUsageCounts(
 }
 
 /**
- * Clientes a los que el excedente no se les cobra: los marcados `is_free` y los
- * que nunca se suscribieron (sin fila en client_billing, p. ej. en trial). Sin
- * esto el item quedaba `pending` para siempre, porque no hay preapproval al que
- * sumarlo. Una suscripción pausada/cancelada SÍ conserva el pending: se suma
- * al monto cuando vuelve a autorizarse.
+ * Clientes a los que el excedente no se les cobra: los que nunca se suscribieron
+ * (sin fila en client_billing, p. ej. en trial). Sin esto el item quedaba
+ * `pending` para siempre, porque no hay preapproval al que sumarlo. Una
+ * suscripción pausada/cancelada SÍ conserva el pending: se suma al monto cuando
+ * vuelve a autorizarse. `client.is_free` no entra acá: sólo saca el límite de
+ * páginas de documentos, hay clientes `is_free` que pagan su suscripción.
  */
 async function getNonBillableClients(clientIds: number[], log: FastifyBaseLogger): Promise<Set<number>> {
   if (clientIds.length === 0) return new Set();
-  const [{ data: clients, error: clientErr }, { data: billings, error: billingErr }] = await Promise.all([
-    supabase.from('client').select('client_id, is_free').in('client_id', clientIds),
-    supabase.from('client_billing').select('client_id').in('client_id', clientIds),
-  ]);
-  if (clientErr || billingErr) {
+  const { data: billings, error } = await supabase
+    .from('client_billing')
+    .select('client_id')
+    .in('client_id', clientIds);
+  if (error) {
     // Ante la duda se factura: un pending de más se puede perdonar a mano, uno
     // marcado free no se recupera.
-    log.error({ err: clientErr ?? billingErr }, 'usage-billing: no se pudo leer is_free/client_billing');
+    log.error({ err: error }, 'usage-billing: no se pudo leer client_billing');
     return new Set();
   }
   const subscribed = new Set((billings ?? []).map((b) => b.client_id as number));
-  const result = new Set<number>();
-  for (const c of clients ?? []) {
-    const id = c.client_id as number;
-    if (c.is_free || !subscribed.has(id)) result.add(id);
-  }
-  return result;
+  return new Set(clientIds.filter((id) => !subscribed.has(id)));
 }
 
 /**
@@ -232,7 +228,7 @@ export async function runUsageBillingBatch(
     billable_uses: i.billableUses,
     amount_ars: i.amountArs,
     // Se guardan los números reales igual (sirven para ver cuánto consume un
-    // cliente free); sólo el status dice si se cobra.
+    // cliente sin suscripción); sólo el status dice si se cobra.
     status: i.billableUses > 0 && !nonBillable.has(i.clientId) ? 'pending' : 'free',
     updated_at: nowIso,
   }));

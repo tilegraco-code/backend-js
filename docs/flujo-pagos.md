@@ -70,7 +70,7 @@ Código: `lib/billing/tierPricing.ts` (`getTierFromPlans`, `calcAmountFromPlans`
 - `syncPreapprovalAmount` se dispara cada vez que cambia algo que afecta el monto: alta de inbox, upgrade de quota, alta de doc facturable, el CRON de uso, o un **cambio de precio**.
 
 ### Cambio de precio de un plan
-Se edita en **Org Settings → Planes**. `updatePlan` escribe `price` y `price_ars` juntos (el cobro lee `price_ars`) y, si el precio cambió, recorre las suscripciones `authorized` cuyo tier es ese plan: les re-sincroniza el preapproval (el **próximo** cobro ya sale con el precio nuevo) y les manda un email con el precio viejo, el nuevo y su monto mensual (salvo `is_free`). Conviene cambiar el precio con unos días de margen antes de las fechas de cobro, para que el aviso llegue antes.
+Se edita en **Org Settings → Planes**. `updatePlan` escribe `price` y `price_ars` juntos (el cobro lee `price_ars`) y, si el precio cambió, recorre las suscripciones `authorized` cuyo tier es ese plan: les re-sincroniza el preapproval (el **próximo** cobro ya sale con el precio nuevo) y les manda un email con el precio viejo, el nuevo y su monto mensual. Conviene cambiar el precio con unos días de margen antes de las fechas de cobro, para que el aviso llegue antes.
 
 ---
 
@@ -129,7 +129,7 @@ amount_ars    = billable_uses × 34
 
 **Idempotencia:** unique `(client_id, billing_period)`; el cron no pisa items ya `paid`.
 
-**No cobrables:** a los clientes `is_free` y a los que nunca se suscribieron (sin fila en `client_billing`) el excedente se guarda con sus números pero en `status='free'`: no hay preapproval al que sumarlo. Una suscripción pausada o cancelada sí conserva el `pending`.
+**No cobrables:** a los clientes que nunca se suscribieron (sin fila en `client_billing`) el excedente se guarda con sus números pero en `status='free'`: no hay preapproval al que sumarlo. Una suscripción pausada o cancelada sí conserva el `pending`. `client.is_free` (switch "Libre" de Org Settings) **no** exime de cobros: sólo saca el límite de páginas de documentos.
 
 ---
 
