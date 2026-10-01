@@ -6,6 +6,13 @@ import { disconnectClientChannels } from './channel-disconnect.service';
 
 const DEFAULT_GRACE_HOURS = 24;
 const DEFAULT_WARNING_HOURS = 48;
+/**
+ * Ventana en la que MercadoPago reintenta una cuota rechazada (hasta 4 intentos
+ * en 10 días). Mientras dura, `next_payment_date` queda en el pasado porque el
+ * webhook sólo la avanza con un cobro aprobado: cortar a las 24h le sacaría los
+ * canales a alguien cuyo pago todavía puede entrar.
+ */
+const MP_RETRY_WINDOW_MS = 10 * 24 * 3600_000;
 
 type Reason = 'trial_expired' | 'payment_overdue';
 type Stage = 'warning' | 'cut';
@@ -246,23 +253,30 @@ export const accountLifecycleService = {
   },
 
   /**
-   * Desconecta (soft) TODOS los canales de clientes con plan cuyo pago venció
-   * hace más de la gracia y no se renovó (next_payment_date sigue en el pasado).
+   * Desconecta (soft) TODOS los canales de clientes con plan impago. Dos caminos:
+   *
+   * - `payment_failed_at`: MP agotó los reintentos de la cuota (lo marca el
+   *   webhook del dashboard). Se corta pasada la gracia desde el rechazo final.
+   * - `next_payment_date` vencida hace más de la ventana de reintentos + la
+   *   gracia sin ningún cobro aprobado: red de seguridad por si el webhook del
+   *   rechazo nunca llegó.
    */
   async runPlanCuts(
     dryRun: boolean,
     log: FastifyBaseLogger,
   ): Promise<{ cuts: number; channels: number; errors: number }> {
     const now = new Date();
-    const threshold = new Date(now.getTime() - getGraceMs()).toISOString();
+    const failedThreshold = new Date(now.getTime() - getGraceMs()).toISOString();
+    const overdueThreshold = new Date(now.getTime() - getGraceMs() - MP_RETRY_WINDOW_MS)
+      .toISOString()
+      .slice(0, 10);
 
     const { data, error } = await supabase
       .from('client_billing')
-      .select('client_id, next_payment_date')
+      .select('client_id, next_payment_date, payment_failed_at')
       .eq('status', 'authorized')
-      .not('next_payment_date', 'is', null)
-      .lte('next_payment_date', threshold)
-      .is('disconnected_at', null);
+      .is('disconnected_at', null)
+      .or(`payment_failed_at.lte."${failedThreshold}",next_payment_date.lte.${overdueThreshold}`);
 
     if (error) {
       log.error({ err: error }, 'runPlanCuts: query error');

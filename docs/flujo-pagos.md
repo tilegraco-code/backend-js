@@ -67,7 +67,10 @@ Código: `lib/billing/tierPricing.ts` (`getTierFromPlans`, `calcAmountFromPlans`
 `lib/billing/syncAmount.ts`:
 - `calcBillingAmount(clientId)` y `syncPreapprovalAmount(clientId)` computan
   `monto = base + getPendingDocAmount() + getPendingUsageAmount()` y hacen `preApproval.update(...)` contra MP.
-- `syncPreapprovalAmount` se dispara cada vez que cambia algo que afecta el monto: alta de inbox, upgrade de quota, alta de doc facturable, o el CRON de uso.
+- `syncPreapprovalAmount` se dispara cada vez que cambia algo que afecta el monto: alta de inbox, upgrade de quota, alta de doc facturable, el CRON de uso, o un **cambio de precio**.
+
+### Cambio de precio de un plan
+Se edita en **Org Settings → Planes**. `updatePlan` escribe `price` y `price_ars` juntos (el cobro lee `price_ars`) y, si el precio cambió, recorre las suscripciones `authorized` cuyo tier es ese plan: les re-sincroniza el preapproval (el **próximo** cobro ya sale con el precio nuevo) y les manda un email con el precio viejo, el nuevo y su monto mensual (salvo `is_free`). Conviene cambiar el precio con unos días de margen antes de las fechas de cobro, para que el aviso llegue antes.
 
 ---
 
@@ -126,6 +129,8 @@ amount_ars    = billable_uses × 34
 
 **Idempotencia:** unique `(client_id, billing_period)`; el cron no pisa items ya `paid`.
 
+**No cobrables:** a los clientes `is_free` y a los que nunca se suscribieron (sin fila en `client_billing`) el excedente se guarda con sus números pero en `status='free'`: no hay preapproval al que sumarlo. Una suscripción pausada o cancelada sí conserva el `pending`.
+
 ---
 
 ## 6. El webhook de MercadoPago
@@ -136,7 +141,22 @@ amount_ars    = billable_uses × 34
 |-----------|----------|
 | `preapproval` | Actualiza `client_billing.status`. Si `authorized` → reactiva inboxes (`suspended=false`), limpia `trial_ends_at` y flags del CRON de ciclo de vida. Si `cancelled`/`paused` → suspende inboxes. |
 | `payment` (pago único) | Upgrade de quota (`external_reference = quota_upgrade:...`): sube `inbox_quota`+`plan_id`, crea `invoice`, re-sincroniza el preapproval. |
-| `payment.created` / `payment.updated` (authorized_payment = cobro recurrente) | Crea `invoice` con descripción (`Plan … · N inboxes + P páginas + U usos excedentes`), marca **documentos y uso** como `paid` (`markBatchAsPaid` + `markUsageBatchAsPaid`), actualiza `next_payment_date`, resetea flags de ciclo de vida, y **vuelve el preapproval al monto base** (docs+uso pending ahora en 0). |
+| `payment.created` / `payment.updated` (authorized_payment = cobro recurrente) | Decide por **`payment.status`**, no por `ap.status` (el estado de la cuota: una cuota que agotó los reintentos queda `processed` con el pago `rejected`). Ver tabla abajo. |
+
+### Cobro recurrente: qué pasa según el resultado
+
+MP reintenta una cuota rechazada hasta **4 veces en 10 días** (`ap.status = recycling`). Si el cuarto falla, la cuota queda `processed` con el pago rechazado. Tras **3 cuotas rechazadas** MP cancela la suscripción (y le avisa al vendedor, no al cliente).
+
+| `payment.status` / `ap.status` | Factura | Efecto | Email al cliente |
+|---|---|---|---|
+| `approved` | `approved`, con desglose | Marca docs + uso `paid`, avanza `next_payment_date`, limpia `payment_failed_at` / flags del cron, vuelve `status='authorized'`, **reactiva canales** si estaba cortado, resync al monto base | "Recibimos tu pago" con detalle base / documentos / excedente |
+| `rejected` + `recycling` | `recycling` | Nada más: MP reintenta | "Tu pago fue rechazado", con la fecha del próximo reintento |
+| `rejected` + `processed` | `rejected` | `client_billing.payment_failed_at = now` → el cron corta tras la gracia | "No pudimos cobrar tu suscripción" |
+| otro (`scheduled`, `in_process`…) | — | Nada, todavía no hay resultado | — |
+
+- Los emails viven en `lib/email/billingEmails.ts` (dashboard). Se manda **uno por intento y resultado**: `invoice.notified_key = <payment_id>:<resultado>` se marca con un update condicional, así los webhooks repetidos de MP no duplican.
+- Un evento `preapproval` → `authorized` **no reactiva** a un cliente con `payment_failed_at`: cualquier update del monto dispara ese evento, y MP mantiene la suscripción `authorized` aunque la cuota se haya rechazado. Sólo lo reactiva un cobro aprobado.
+- Si al reautorizar el monto en MP difiere de `calcBillingAmount()` (p. ej. se cargó excedente con la suscripción pausada), se re-sincroniza. Compara antes de actualizar para no entrar en loop con el evento que dispara el propio update.
 
 ---
 
@@ -185,7 +205,9 @@ amount_ars    = billable_uses × 34
 `src/services/account-lifecycle.service.ts` + `src/jobs/account-lifecycle.job.ts` (CRON diario `0 13 * * *`).
 
 - **Trials:** avisa a los que vencen dentro de la ventana de aviso; tras la gracia desconecta canales (salvo que tengan billing autorizado).
-- **Planes:** avisa cuando `next_payment_date` está por vencer; tras la gracia sin renovar, desconecta canales y pone `status='paused'`.
+- **Planes:** avisa cuando `next_payment_date` está por vencer. Corta (desconecta canales y pone `status='paused'`) cuando:
+  - `payment_failed_at` (rechazo final de MP) tiene más de la gracia, o
+  - `next_payment_date` venció hace más de **10 días de reintentos + la gracia** sin cobro aprobado (red de seguridad si el webhook del rechazo no llegó). No se corta a las 24h porque durante los reintentos de MP la fecha queda en el pasado.
 - Config: `ACCOUNT_LIFECYCLE_CRON`, `ACCOUNT_LIFECYCLE_GRACE_HOURS`, `ACCOUNT_LIFECYCLE_WARNING_HOURS` (default 48, nunca menor a la gracia), `ACCOUNT_LIFECYCLE_DRY_RUN`.
 
 ### El corte es soft: suspende, no borra
@@ -271,7 +293,7 @@ from usage_billing_items order by created_at desc;
 **dashboard-tilegra**
 - `lib/mercadopago.ts`
 - `lib/billing/syncAmount.ts` · `tierPricing.ts` · `getBillingPlans.ts`
-- `lib/billing/documentBilling.ts` · `lib/billing/usageBilling.ts`
+- `lib/billing/documentBilling.ts` · `lib/billing/usageBilling.ts` · `lib/email/billingEmails.ts`
 - `app/api/webhooks/mercadopago/route.ts`
 - `app/api/billing/{subscribe,update-quota,cancel,pause,resume,sync-preapproval}/route.ts`
 - `app/dashboard/plans/plan-calculator.tsx` · `app/dashboard/usage/page.tsx` · `lib/client/usagePage.tsx`
@@ -281,4 +303,4 @@ from usage_billing_items order by created_at desc;
 - `src/services/usage-billing.service.ts` · `src/jobs/usage-billing.job.ts` · `src/routes/admin/usage-billing.route.ts`
 - `src/services/account-lifecycle.service.ts` · `src/services/channel-disconnect.service.ts` · `src/jobs/account-lifecycle.job.ts`
 - `src/lib/owner-email.ts` · `src/services/email.service.ts`
-- `db/migrations/usage_billing_items.sql` · `db/migrations/unipile_inboxes_suspended_reason.sql`
+- `db/migrations/usage_billing_items.sql` · `db/migrations/unipile_inboxes_suspended_reason.sql` · `db/migrations/billing_payment_failures.sql`

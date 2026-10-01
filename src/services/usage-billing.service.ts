@@ -98,6 +98,34 @@ async function getUsageCounts(
 }
 
 /**
+ * Clientes a los que el excedente no se les cobra: los marcados `is_free` y los
+ * que nunca se suscribieron (sin fila en client_billing, p. ej. en trial). Sin
+ * esto el item quedaba `pending` para siempre, porque no hay preapproval al que
+ * sumarlo. Una suscripción pausada/cancelada SÍ conserva el pending: se suma
+ * al monto cuando vuelve a autorizarse.
+ */
+async function getNonBillableClients(clientIds: number[], log: FastifyBaseLogger): Promise<Set<number>> {
+  if (clientIds.length === 0) return new Set();
+  const [{ data: clients, error: clientErr }, { data: billings, error: billingErr }] = await Promise.all([
+    supabase.from('client').select('client_id, is_free').in('client_id', clientIds),
+    supabase.from('client_billing').select('client_id').in('client_id', clientIds),
+  ]);
+  if (clientErr || billingErr) {
+    // Ante la duda se factura: un pending de más se puede perdonar a mano, uno
+    // marcado free no se recupera.
+    log.error({ err: clientErr ?? billingErr }, 'usage-billing: no se pudo leer is_free/client_billing');
+    return new Set();
+  }
+  const subscribed = new Set((billings ?? []).map((b) => b.client_id as number));
+  const result = new Set<number>();
+  for (const c of clients ?? []) {
+    const id = c.client_id as number;
+    if (c.is_free || !subscribed.has(id)) result.add(id);
+  }
+  return result;
+}
+
+/**
  * Dispara el recálculo del monto del preapproval en el dashboard (donde vive el
  * SDK de MercadoPago). Best-effort: si falla, el pending queda igual escrito y
  * se recuperará en la próxima corrida / evento.
@@ -172,7 +200,11 @@ export async function runUsageBillingBatch(
     items.push({ clientId, includedUses, totalUses, billableUses, amountArs });
   }
 
-  const billable = items.filter((i) => i.billableUses > 0);
+  const nonBillable = await getNonBillableClients(
+    items.filter((i) => i.billableUses > 0).map((i) => i.clientId),
+    log,
+  );
+  const billable = items.filter((i) => i.billableUses > 0 && !nonBillable.has(i.clientId));
   const summary: UsageBillingSummary = {
     period,
     clientsProcessed: items.length,
@@ -199,7 +231,9 @@ export async function runUsageBillingBatch(
     total_uses: i.totalUses,
     billable_uses: i.billableUses,
     amount_ars: i.amountArs,
-    status: i.billableUses > 0 ? 'pending' : 'free',
+    // Se guardan los números reales igual (sirven para ver cuánto consume un
+    // cliente free); sólo el status dice si se cobra.
+    status: i.billableUses > 0 && !nonBillable.has(i.clientId) ? 'pending' : 'free',
     updated_at: nowIso,
   }));
 
