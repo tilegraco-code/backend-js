@@ -64,6 +64,8 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
             // Tools de API propias (ej. TiendaNube) desde agent_tools (habilitadas).
             api_tools: z.array(
               z.object({
+                // El runtime lo manda de vuelta a /api/tools/http/run (tools HTTP).
+                id: z.number(),
                 name: z.string(),
                 description: z.string().nullable(),
                 type: z.string().nullable(),
@@ -115,7 +117,7 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
             ? Promise.resolve({ data: [] as Record<string, unknown>[] })
             : supabase
                 .from('agent_tools')
-                .select('name, description, type, config')
+                .select('id, name, description, type, config')
                 .eq('agent_id', agentId)
                 .eq('enabled', true),
           isRouter
@@ -130,6 +132,7 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
         ]);
 
         const api_tools = (apiToolsRes.data ?? []).map((t) => ({
+          id: t.id as number,
           name: t.name as string,
           description: (t.description as string | null) ?? null,
           type: (t.type as string | null) ?? null,

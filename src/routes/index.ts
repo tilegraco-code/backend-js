@@ -8,6 +8,7 @@ import { adminAccountLifecycleRoute } from './admin/account-lifecycle.route';
 import { adminUsageBillingRoute } from './admin/usage-billing.route';
 import { tiendanubeOauthRoutes } from './tiendanube-oauth.route';
 import { tiendanubeRoutes } from './tiendanube.route';
+import { toolsRoutes } from './tools.route';
 import { shipnowRoutes } from './shipnow.route';
 import { mercadolibreOauthRoutes } from './mercadolibre-oauth.route';
 import { mercadolibreRoutes } from './mercadolibre.route';
@@ -61,6 +62,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await api.register(adminUsageBillingRoute, { prefix: '/admin' });
       await api.register(tiendanubeRoutes, { prefix: '/tiendanube' });
       await api.register(shipnowRoutes, { prefix: '/shipnow' });
+      await api.register(toolsRoutes, { prefix: '/tools' });
       await api.register(mercadolibreRoutes, { prefix: '/mercadolibre' });
       await api.register(googleRoutes, { prefix: '/google' });
       await api.register(composioRoutes, { prefix: '/composio' });
