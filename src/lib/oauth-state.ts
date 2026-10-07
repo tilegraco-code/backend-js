@@ -16,14 +16,21 @@ function b64url(input: Buffer | string): string {
   return Buffer.from(input).toString('base64url');
 }
 
-export function signState(clientId: number): string {
-  const payload = b64url(JSON.stringify({ client_id: clientId, ts: Date.now() }));
+/**
+ * `extra` viaja firmado junto al client_id (ej. WooCommerce manda la URL de la
+ * tienda, que no se puede deducir en el callback).
+ */
+export function signState(clientId: number, extra: Record<string, string> = {}): string {
+  const payload = b64url(JSON.stringify({ ...extra, client_id: clientId, ts: Date.now() }));
   const sig = b64url(createHmac('sha256', secret()).update(payload).digest());
   return `${payload}.${sig}`;
 }
 
-/** Devuelve el client_id si el state es válido y no expiró; si no, null. */
-export function verifyState(state: string): number | null {
+/** Devuelve el contenido del state si es válido y no expiró; si no, null. */
+export function verifyStateData(
+  state: string,
+  maxAgeMs = MAX_AGE_MS,
+): ({ client_id: number } & Record<string, unknown>) | null {
   const [payload, sig] = state.split('.');
   if (!payload || !sig) return null;
 
@@ -36,11 +43,16 @@ export function verifyState(state: string): number | null {
     const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString()) as {
       client_id?: number;
       ts?: number;
-    };
+    } & Record<string, unknown>;
     if (!decoded.client_id || !decoded.ts) return null;
-    if (Date.now() - decoded.ts > MAX_AGE_MS) return null;
-    return decoded.client_id;
+    if (Date.now() - decoded.ts > maxAgeMs) return null;
+    return decoded as { client_id: number } & Record<string, unknown>;
   } catch {
     return null;
   }
+}
+
+/** Devuelve el client_id si el state es válido y no expiró; si no, null. */
+export function verifyState(state: string): number | null {
+  return verifyStateData(state)?.client_id ?? null;
 }

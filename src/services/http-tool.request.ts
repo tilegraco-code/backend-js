@@ -96,7 +96,7 @@ export function isBlockedAddress(ip: string): boolean {
  * conecta. Validar antes y conectar después deja abierto el DNS rebinding (el
  * dominio resuelve a una IP pública en el chequeo y a 127.0.0.1 en la conexión).
  */
-const safeLookup: net.LookupFunction = (hostname, options, callback) => {
+export const safeLookup: net.LookupFunction = (hostname, options, callback) => {
   dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
     if (err) return callback(err, '', 0);
     const list = addresses as dns.LookupAddress[];

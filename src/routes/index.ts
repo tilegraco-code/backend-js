@@ -10,6 +10,8 @@ import { tiendanubeOauthRoutes } from './tiendanube-oauth.route';
 import { tiendanubeRoutes } from './tiendanube.route';
 import { toolsRoutes } from './tools.route';
 import { shipnowRoutes } from './shipnow.route';
+import { woocommerceRoutes } from './woocommerce.route';
+import { woocommerceOauthRoutes } from './woocommerce-oauth.route';
 import { mercadolibreOauthRoutes } from './mercadolibre-oauth.route';
 import { mercadolibreRoutes } from './mercadolibre.route';
 import { googleOauthRoutes } from './google-oauth.route';
@@ -48,6 +50,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // TiendaNube: la seguridad la da el `state` firmado, por eso va fuera del scope /api.
   await app.register(googleOauthRoutes, { prefix: '/api/google' });
 
+  // Callback de autorización de WooCommerce: público (lo llama el WordPress de la
+  // tienda, server-to-server). La seguridad la da el state firmado que viaja como user_id.
+  await app.register(woocommerceOauthRoutes, { prefix: '/api/woocommerce' });
+
   // Tracking de Meta CAPI. `/track` es público (lo pega el navegador); `/server-event`
   // trae su propio internalTokenAuth por-ruta, por eso el plugin va fuera del scope /api.
   await app.register(metaCapiRoute, { prefix: '/api/tracking' });
@@ -62,6 +68,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await api.register(adminUsageBillingRoute, { prefix: '/admin' });
       await api.register(tiendanubeRoutes, { prefix: '/tiendanube' });
       await api.register(shipnowRoutes, { prefix: '/shipnow' });
+      await api.register(woocommerceRoutes, { prefix: '/woocommerce' });
       await api.register(toolsRoutes, { prefix: '/tools' });
       await api.register(mercadolibreRoutes, { prefix: '/mercadolibre' });
       await api.register(googleRoutes, { prefix: '/google' });
