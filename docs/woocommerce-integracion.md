@@ -32,6 +32,30 @@ desde un link. Cada cliente conecta su tienda desde **Integraciones** en el dash
 Auth: header `Basic`; si la tienda lo rechaza se prueba por query string (hostings que se comen
 `Authorization`) y se guarda en `auth_mode`.
 
+## Tools del agente
+
+Criterio: el comprador consulta lo mismo que ve en la web de la tienda, más el estado de un
+pedido. Nada de back-office (clientes, reportes, ajustes, webhooks).
+
+| Acción | Endpoint backend-js | WooCommerce | Caché |
+|---|---|---|---|
+| `search_products` | `GET /products?query=` / `?product_id=` | `/products`, `/products/<id>/variations`, `/products/<id>` | catálogo 1h; la ficha va en vivo |
+| `get_reviews` | `GET /reviews?product_id=` | `/products/reviews?product=&status=approved` | en vivo |
+| `get_shipping_info` | `GET /shipping?state=&postcode=&country=` | `/shipping/zones` (+ locations y methods), `/data/countries/<c>`, `/settings/general/woocommerce_default_country` | 1h |
+| `get_payment_methods` | `GET /payment-methods` | `/payment_gateways` (sólo activos) | 1h |
+| `get_order_status` | `GET /orders?order_number=` | `/orders/<id>` o `/orders?search=`, `/orders/<id>/notes?type=customer` | en vivo |
+| `create_checkout` | `POST /checkout` | `POST /orders` | — |
+
+- **Envíos:** la zona se elige como WooCommerce (`matchShippingZone`): la primera por `order` cuyas
+  regiones incluyan el destino y, si tiene CP, que coincida; si no, la zona 0. Si la respuesta
+  depende de la provincia o del CP y no vino, se le pide al agente que lo pregunte. La API no cotiza
+  carritos: tarifa plana y envío gratis salen exactos; fórmulas (`[qty]`) y métodos de plugins
+  (Andreani, OCA) vuelven con `cost: null` y "se calcula al pagar".
+- **Estado del pedido:** sólo con el número (decisión de producto, 2026-10-13). Por eso
+  `shapeOrderStatus` no devuelve nombre, email, teléfono ni dirección exacta (sólo la ciudad), y
+  de las notas sólo las marcadas para el cliente. Se acepta un pedido sólo si su `number` coincide
+  exacto (plugins de numeración secuencial hacen que `number` ≠ `id`).
+
 ## Checkout
 
 Crea un pedido `pending` y devuelve `payment_url` (página de pago del pedido). WooCommerce

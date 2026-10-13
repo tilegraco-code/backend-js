@@ -1,14 +1,25 @@
-// Conexión + catálogo cacheado + armado de pedidos de WooCommerce.
+// Conexión + lecturas para el agente + armado de pedidos de WooCommerce.
 // - Conexión: tabla woocommerce_connections (1 fila por client_id).
-// - Caché: tabla woocommerce_cache (catálogo ya compactado, TTL 1h). Bajar el
-//   catálogo cuesta 1 request por página + 1 por cada producto variable.
+// - Caché: tabla woocommerce_cache (TTL 1h) para lo que cambia poco y cuesta varios
+//   requests: catálogo (1 por página + 1 por producto variable), configuración de
+//   envíos y medios de pago. Detalle de producto, reseñas y pedidos van en vivo.
 // - Checkout: crea un pedido `pending` y devuelve su payment_url (la página de
 //   WooCommerce para pagar ese pedido). El envío lo define la config de la tool.
 import { supabase } from '../lib/supabase';
 import { signState } from '../lib/oauth-state';
 import { filterByQuery } from '../lib/text-search';
-import { WooCreds, WooError, WooOrderInput, woocommerceApiService } from './woocommerce-api.service';
-import { ShapedProduct, shapeProduct } from './woocommerce.shape';
+import { WooCountry, WooCreds, WooError, WooOrderInput, woocommerceApiService } from './woocommerce-api.service';
+import {
+  ShapedProduct,
+  ZoneWithRules,
+  matchShippingZone,
+  resolveStateCode,
+  shapeOrderStatus,
+  shapeProduct,
+  shapeProductDetail,
+  shapeReview,
+  shapeShippingMethod,
+} from './woocommerce.shape';
 
 export type WoocommerceConnection = {
   id: number;
@@ -94,8 +105,72 @@ async function fetchShapedCatalog(creds: WooCreds): Promise<ShapedProduct[]> {
   });
 }
 
-// Dos conversaciones que buscan a la vez con el caché vencido comparten el mismo refetch.
-const inflight = new Map<number, Promise<ShapedProduct[]>>();
+// Dos conversaciones que leen el mismo recurso con el caché vencido comparten el refetch.
+const inflight = new Map<string, Promise<unknown>>();
+
+function stripTags(html: string | undefined): string | null {
+  const text = (html ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return text ? text.slice(0, 300) : null;
+}
+
+function countCategories(items: ShapedProduct[]): { name: string; products: number }[] {
+  const counts = new Map<string, number>();
+  for (const p of items) for (const c of p.categories ?? []) counts.set(c, (counts.get(c) ?? 0) + 1);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([name, products]) => ({ name, products }));
+}
+
+type ShippingSetup = {
+  store_country: string | null;
+  zones: ZoneWithRules[];
+  // Países que aparecen en las zonas (+ el de la tienda), con sus provincias.
+  countries: Record<string, WooCountry>;
+};
+
+async function fetchShippingSetup(creds: WooCreds): Promise<ShippingSetup> {
+  const [zones, storeCountry] = await Promise.all([
+    woocommerceApiService.fetchShippingZones(creds),
+    woocommerceApiService.fetchStoreCountry(creds).catch(() => null),
+  ]);
+  const withRules = await mapLimit(zones, VARIATION_CONCURRENCY, async (z) => {
+    const [locations, methods] = await Promise.all([
+      z.id === 0 ? Promise.resolve([]) : woocommerceApiService.fetchZoneLocations(creds, z.id),
+      woocommerceApiService.fetchZoneMethods(creds, z.id),
+    ]);
+    return {
+      id: z.id,
+      name: z.name ?? '',
+      order: z.order ?? 0,
+      locations,
+      // Sólo lo que usa shapeShippingMethod (los settings traen mucho ruido de UI).
+      methods: methods.map((m) => ({
+        instance_id: m.instance_id,
+        title: m.title,
+        enabled: m.enabled,
+        method_id: m.method_id,
+        method_title: m.method_title,
+        settings: Object.fromEntries(
+          ['title', 'cost', 'requires', 'min_amount']
+            .filter((k) => m.settings?.[k])
+            .map((k) => [k, { value: m.settings![k].value }]),
+        ),
+      })),
+    };
+  });
+
+  const store = storeCountry?.split(':')[0]?.toUpperCase() || null;
+  const codes = new Set<string>(store ? [store] : []);
+  for (const z of withRules) {
+    for (const l of z.locations) {
+      if (l.type === 'country' || l.type === 'state') codes.add(l.code.split(':')[0].toUpperCase());
+    }
+  }
+  const countries: Record<string, WooCountry> = {};
+  for (const code of codes) {
+    const c = await woocommerceApiService.fetchCountry(creds, code).catch(() => null);
+    if (c) countries[code] = { code: c.code, name: c.name, states: c.states ?? [] };
+  }
+  return { store_country: store, zones: withRules, countries };
+}
 
 export const woocommerceService = {
   async getConnection(clientId: number): Promise<WoocommerceConnection | null> {
@@ -239,42 +314,49 @@ export const woocommerceService = {
     await supabase.from('woocommerce_cache').delete().eq('client_id', clientId);
   },
 
-  /** Catálogo compactado, read-through sobre woocommerce_cache. */
-  async getProducts(clientId: number): Promise<{ items: ShapedProduct[]; cached: boolean; fetched_at: string; currency: string | null }> {
+  /** Conexión o error claro para el agente. */
+  async requireConnection(clientId: number): Promise<WoocommerceConnection> {
     const conn = await this.getConnection(clientId);
     if (!conn) throw new WooError('Este workspace no tiene WooCommerce conectado', 404);
+    return conn;
+  },
 
+  /**
+   * Read-through sobre woocommerce_cache: devuelve el snapshot de `resource` si está
+   * fresco; si no, lo recalcula con `fetcher` y lo guarda. Pedidos concurrentes del
+   * mismo recurso comparten el mismo refetch.
+   */
+  async cached<T>(
+    clientId: number,
+    resource: string,
+    fetcher: () => Promise<T>,
+  ): Promise<{ payload: T; cached: boolean; fetched_at: string }> {
     const { data: row, error } = await supabase
       .from('woocommerce_cache')
       .select('payload, fetched_at, expires_at')
       .eq('client_id', clientId)
-      .eq('resource', 'products')
+      .eq('resource', resource)
       .maybeSingle();
     if (error) throw error;
-
     if (row && new Date(row.expires_at).getTime() > Date.now()) {
-      return {
-        items: (row.payload as ShapedProduct[]) ?? [],
-        cached: true,
-        fetched_at: row.fetched_at as string,
-        currency: conn.currency,
-      };
+      return { payload: row.payload as T, cached: true, fetched_at: row.fetched_at as string };
     }
 
-    let pending = inflight.get(clientId);
+    const key = `${clientId}:${resource}`;
+    let pending = inflight.get(key) as Promise<T> | undefined;
     if (!pending) {
-      pending = fetchShapedCatalog(credsOf(conn)).finally(() => inflight.delete(clientId));
-      inflight.set(clientId, pending);
+      pending = fetcher().finally(() => inflight.delete(key));
+      inflight.set(key, pending);
     }
-    const items = await pending;
+    const payload = await pending;
 
     const now = new Date();
     const fetchedAt = now.toISOString();
     const { error: upErr } = await supabase.from('woocommerce_cache').upsert(
       {
         client_id: clientId,
-        resource: 'products',
-        payload: items,
+        resource,
+        payload,
         fetched_at: fetchedAt,
         expires_at: new Date(now.getTime() + ttlMs()).toISOString(),
         updated_at: fetchedAt,
@@ -282,24 +364,151 @@ export const woocommerceService = {
       { onConflict: 'client_id,resource' },
     );
     if (upErr) throw upErr;
-
-    return { items, cached: false, fetched_at: fetchedAt, currency: conn.currency };
+    return { payload, cached: false, fetched_at: fetchedAt };
   },
 
-  /** Lo que ve el agente al buscar: filtrado por texto y acotado para no inflar el prompt. */
+  /** Catálogo compactado (cacheado). */
+  async getProducts(clientId: number): Promise<{ items: ShapedProduct[]; cached: boolean; fetched_at: string; currency: string | null }> {
+    const conn = await this.requireConnection(clientId);
+    const { payload, cached, fetched_at } = await this.cached(clientId, 'products', () =>
+      fetchShapedCatalog(credsOf(conn)),
+    );
+    return { items: payload ?? [], cached, fetched_at, currency: conn.currency };
+  },
+
+  /**
+   * Lo que ve el agente al buscar: filtrado por texto y acotado para no inflar el prompt.
+   * Sin texto suma las categorías, para que el agente pueda contar qué vende la tienda.
+   */
   async searchProducts(clientId: number, query?: string) {
     const { items, cached, fetched_at, currency } = await this.getProducts(clientId);
     const matches = filterByQuery(items, query);
+    const categories = query?.trim() ? null : countCategories(items);
     return {
       items: matches.slice(0, MAX_SEARCH_RESULTS),
       count: matches.length,
       ...(matches.length > MAX_SEARCH_RESULTS
         ? { note: `Hay ${matches.length} resultados; se muestran los primeros ${MAX_SEARCH_RESULTS}. Buscá algo más específico.` }
         : {}),
+      ...(categories ? { categories } : {}),
       currency,
       cached,
       fetched_at,
     };
+  },
+
+  /** Ficha completa de un producto, en vivo (precio y stock al momento). */
+  async getProductDetail(clientId: number, productId: number) {
+    const conn = await this.requireConnection(clientId);
+    const creds = credsOf(conn);
+    const product = await woocommerceApiService.fetchProduct(creds, productId);
+    if (!product || (product.status && product.status !== 'publish')) {
+      return { found: false, reason: `No existe un producto publicado con product_id ${productId}.` };
+    }
+    const variations =
+      product.type === 'variable' && (product.variations?.length ?? 0) > 0
+        ? await woocommerceApiService.fetchVariations(creds, product.id)
+        : [];
+    return { found: true, currency: conn.currency, ...shapeProductDetail(product, variations) };
+  },
+
+  /** Últimas reseñas aprobadas de un producto. */
+  async getReviews(clientId: number, productId: number) {
+    const conn = await this.requireConnection(clientId);
+    const reviews = await woocommerceApiService.fetchReviews(credsOf(conn), productId);
+    if (reviews.length === 0) {
+      return { product_id: productId, count: 0, reviews: [], note: 'Este producto todavía no tiene reseñas.' };
+    }
+    const ratings = reviews.map((r) => r.rating ?? 0).filter((n) => n > 0);
+    const average = ratings.length ? Math.round((ratings.reduce((a, b) => a + b, 0) / ratings.length) * 10) / 10 : null;
+    return { product_id: productId, count: reviews.length, average_of_shown: average, reviews: reviews.map(shapeReview) };
+  },
+
+  /**
+   * Opciones de envío para un destino. Zonas, ubicaciones y métodos se cachean juntos
+   * (cambian poco y son 1 + 2×zonas requests). La provincia se acepta por nombre.
+   */
+  async getShippingOptions(clientId: number, input: { country?: string; state?: string; postcode?: string }) {
+    const conn = await this.requireConnection(clientId);
+    const creds = credsOf(conn);
+    const { payload } = await this.cached(clientId, 'shipping', () => fetchShippingSetup(creds));
+
+    const country = (input.country?.trim() || payload.store_country || '').toUpperCase().slice(0, 2);
+    if (!country) {
+      return { found: false, reason: 'Necesito saber el país de destino (código de 2 letras, ej. AR).' };
+    }
+    const countryData = payload.countries[country] ?? null;
+    const stateCode = resolveStateCode(countryData, input.state);
+    if (input.state?.trim() && !stateCode) {
+      const options = countryData?.states?.map((st) => st.name).join(', ');
+      return {
+        found: false,
+        reason: `No reconozco la provincia "${input.state}".${options ? ` Opciones: ${options}.` : ''}`,
+      };
+    }
+
+    const zone = matchShippingZone(payload.zones, { country, state: stateCode, postcode: input.postcode });
+    if (zone === 'needs_state') {
+      return { found: false, reason: 'El costo depende de la provincia: preguntale al comprador a qué provincia es el envío.' };
+    }
+    if (zone === 'needs_postcode') {
+      return { found: false, reason: 'El costo depende del código postal: preguntale al comprador su código postal.' };
+    }
+    const methods = (zone?.methods ?? []).filter((m) => m.enabled !== false);
+    if (!zone || methods.length === 0) {
+      return { found: true, ships: false, reason: 'La tienda no tiene envíos configurados para ese destino.' };
+    }
+    return {
+      found: true,
+      ships: true,
+      zone: zone.name,
+      currency: conn.currency,
+      methods: methods.map(shapeShippingMethod),
+    };
+  },
+
+  /** Medios de pago activos (cacheado). */
+  async getPaymentMethods(clientId: number) {
+    const conn = await this.requireConnection(clientId);
+    const { payload } = await this.cached(clientId, 'payment_methods', async () => {
+      const gateways = await woocommerceApiService.fetchPaymentGateways(credsOf(conn));
+      return gateways
+        .filter((g) => g.enabled)
+        .sort((a, b) => Number(a.order ?? 0) - Number(b.order ?? 0))
+        .map((g) => ({ name: g.title || g.id, description: stripTags(g.description) }));
+    });
+    return payload.length
+      ? { methods: payload }
+      : { methods: [], note: 'La tienda no tiene medios de pago activos.' };
+  },
+
+  /**
+   * Estado de un pedido por número. Sin verificación de identidad (decisión de producto),
+   * por eso shapeOrderStatus no devuelve datos personales.
+   *
+   * El número que ve el comprador puede no ser el id interno (plugins de numeración
+   * secuencial): sólo aceptamos un pedido cuyo `number` coincida exactamente.
+   */
+  async getOrderStatus(clientId: number, rawNumber: string) {
+    const conn = await this.requireConnection(clientId);
+    const creds = credsOf(conn);
+    const needle = rawNumber.trim().replace(/^#/, '');
+    if (!needle) return { found: false, reason: 'No me pasaste un número de pedido.' };
+
+    let order = /^\d+$/.test(needle) ? await woocommerceApiService.fetchOrder(creds, Number(needle)) : null;
+    if (order && String(order.number ?? order.id) !== needle) order = null;
+    if (!order) {
+      const results = await woocommerceApiService.searchOrders(creds, needle);
+      order = results.find((o) => String(o.number ?? o.id) === needle) ?? null;
+    }
+    if (!order || order.status === 'trash') {
+      return {
+        found: false,
+        reason: `No encontré ningún pedido con el número ${needle}. Pedile al comprador que revise el número en el mail de confirmación de la compra.`,
+      };
+    }
+    const notes = await woocommerceApiService.fetchCustomerNotes(creds, order.id).catch(() => []);
+    return shapeOrderStatus(order, notes);
   },
 
   /** Lee la config de la tool verificando que sea de WooCommerce y de este cliente. */

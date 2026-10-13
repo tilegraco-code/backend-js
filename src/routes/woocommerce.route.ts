@@ -140,23 +140,131 @@ export async function woocommerceRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // GET /api/woocommerce/products?client_id=&query= — la consume la tool search_products.
+  const readErrors = {
+    400: errorResponseSchema,
+    401: errorResponseSchema,
+    404: errorResponseSchema,
+    500: errorResponseSchema,
+    502: errorResponseSchema,
+  };
+
+  // GET /api/woocommerce/products?client_id=&query=&product_id= — tool search_products.
+  // Con product_id devuelve la ficha completa de ese producto (en vivo); si no, busca
+  // en el catálogo cacheado.
   r.get(
     '/products',
     {
       schema: {
         tags: ['woocommerce'],
-        summary: 'Productos (cacheado 1h) con filtro opcional por texto',
+        summary: 'Productos (cacheado 1h) con filtro por texto, o la ficha de un producto',
         security: [{ InternalToken: [] }],
-        querystring: z.object({ client_id: clientIdSchema, query: z.string().optional() }),
-        response: { 200: z.unknown(), 400: errorResponseSchema, 401: errorResponseSchema, 404: errorResponseSchema, 500: errorResponseSchema, 502: errorResponseSchema },
+        querystring: z.object({
+          client_id: clientIdSchema,
+          query: z.string().optional(),
+          product_id: z.coerce.number().int().positive().optional(),
+        }),
+        response: { 200: z.unknown(), ...readErrors },
+      },
+    },
+    async (request, reply) => {
+      const { client_id, query, product_id } = request.query;
+      try {
+        return product_id
+          ? await woocommerceService.getProductDetail(client_id, product_id)
+          : await woocommerceService.searchProducts(client_id, query);
+      } catch (e) {
+        return sendError(request, reply, e, 'No se pudieron leer los productos de WooCommerce.');
+      }
+    },
+  );
+
+  // GET /api/woocommerce/reviews?client_id=&product_id= — tool get_reviews.
+  r.get(
+    '/reviews',
+    {
+      schema: {
+        tags: ['woocommerce'],
+        summary: 'Últimas reseñas aprobadas de un producto',
+        security: [{ InternalToken: [] }],
+        querystring: z.object({ client_id: clientIdSchema, product_id: z.coerce.number().int().positive() }),
+        response: { 200: z.unknown(), ...readErrors },
       },
     },
     async (request, reply) => {
       try {
-        return await woocommerceService.searchProducts(request.query.client_id, request.query.query);
+        return await woocommerceService.getReviews(request.query.client_id, request.query.product_id);
       } catch (e) {
-        return sendError(request, reply, e, 'No se pudieron leer los productos de WooCommerce.');
+        return sendError(request, reply, e, 'No se pudieron leer las reseñas de WooCommerce.');
+      }
+    },
+  );
+
+  // GET /api/woocommerce/shipping?client_id=&country=&state=&postcode= — tool get_shipping_info.
+  r.get(
+    '/shipping',
+    {
+      schema: {
+        tags: ['woocommerce'],
+        summary: 'Métodos y costos de envío configurados para un destino',
+        security: [{ InternalToken: [] }],
+        querystring: z.object({
+          client_id: clientIdSchema,
+          country: z.string().optional(),
+          state: z.string().optional(),
+          postcode: z.string().optional(),
+        }),
+        response: { 200: z.unknown(), ...readErrors },
+      },
+    },
+    async (request, reply) => {
+      const { client_id, ...dest } = request.query;
+      try {
+        return await woocommerceService.getShippingOptions(client_id, dest);
+      } catch (e) {
+        return sendError(request, reply, e, 'No se pudieron leer los envíos de WooCommerce.');
+      }
+    },
+  );
+
+  // GET /api/woocommerce/payment-methods?client_id= — tool get_payment_methods.
+  r.get(
+    '/payment-methods',
+    {
+      schema: {
+        tags: ['woocommerce'],
+        summary: 'Medios de pago activos de la tienda (cacheado 1h)',
+        security: [{ InternalToken: [] }],
+        querystring: z.object({ client_id: clientIdSchema }),
+        response: { 200: z.unknown(), ...readErrors },
+      },
+    },
+    async (request, reply) => {
+      try {
+        return await woocommerceService.getPaymentMethods(request.query.client_id);
+      } catch (e) {
+        return sendError(request, reply, e, 'No se pudieron leer los medios de pago de WooCommerce.');
+      }
+    },
+  );
+
+  // GET /api/woocommerce/orders?client_id=&order_number= — tool get_order_status.
+  // Sólo con el número (sin verificar identidad): la respuesta no trae datos personales.
+  r.get(
+    '/orders',
+    {
+      schema: {
+        tags: ['woocommerce'],
+        summary: 'Estado de un pedido por número (sin datos personales del comprador)',
+        security: [{ InternalToken: [] }],
+        querystring: z.object({ client_id: clientIdSchema, order_number: z.string().min(1) }),
+        response: { 200: z.unknown(), ...readErrors },
+      },
+    },
+    async (request, reply) => {
+      try {
+        return await woocommerceService.getOrderStatus(request.query.client_id, request.query.order_number);
+      } catch (e) {
+        return sendError(request, reply, e, 'No se pudo consultar el pedido en WooCommerce.');
       }
     },
   );

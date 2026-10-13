@@ -215,6 +215,19 @@ async function callOk(
   return out;
 }
 
+/** GET que devuelve null en 404 (recurso inexistente) en vez de tirar. */
+async function getOrNull(creds: WooCreds, path: string, query?: Query): Promise<unknown | null> {
+  const out = await call(creds, 'GET', path, { query });
+  if (out.res.status === 404) return null;
+  if (out.res.status === 401 || out.res.status === 403) {
+    throw new WooError(`WooCommerce rechazó las claves: ${wooMessage(out.res)}.`, 401);
+  }
+  if (out.res.status >= 400 || out.data === null) {
+    throw new WooError(`WooCommerce respondió con error: ${wooMessage(out.res)}.`, 502);
+  }
+  return out.data;
+}
+
 // ── Tipos (subset de lo que usamos) ─────────────────────────────────────────
 
 export type WooProduct = {
@@ -267,8 +280,61 @@ export type WooOrder = {
   total?: string;
   currency?: string;
   payment_url?: string;
+  date_created?: string;
+  date_paid?: string | null;
+  date_completed?: string | null;
+  payment_method_title?: string;
+  line_items?: { name?: string; quantity?: number; total?: string }[];
+  shipping_lines?: { method_title?: string; total?: string }[];
+  shipping?: { city?: string; state?: string; country?: string };
+  billing?: { city?: string; state?: string; country?: string };
+  refunds?: { id: number; reason?: string; total?: string }[];
   [key: string]: unknown;
 };
+
+/** Detalle de un producto (GET /products/<id>): lo de WooProduct + la ficha completa. */
+export type WooProductDetail = WooProduct & {
+  description?: string;
+  sku?: string;
+  weight?: string;
+  dimensions?: { length?: string; width?: string; height?: string };
+  average_rating?: string;
+  rating_count?: number;
+};
+
+export type WooReview = {
+  id: number;
+  product_id?: number;
+  status?: string;
+  reviewer?: string;
+  review?: string;
+  rating?: number;
+  verified?: boolean;
+  date_created?: string;
+};
+
+export type WooShippingZone = { id: number; name?: string; order?: number };
+export type WooZoneLocation = { code: string; type: 'postcode' | 'state' | 'country' | 'continent' };
+export type WooZoneMethod = {
+  instance_id?: number;
+  title?: string;
+  enabled?: boolean;
+  method_id?: string; // flat_rate | free_shipping | local_pickup | <plugin>
+  method_title?: string;
+  settings?: Record<string, { value?: unknown }>;
+};
+
+export type WooPaymentGateway = {
+  id: string;
+  title?: string;
+  description?: string;
+  enabled?: boolean;
+  order?: number | string;
+};
+
+export type WooCountry = { code: string; name?: string; states?: { code: string; name: string }[] };
+
+export type WooOrderNote = { id: number; note?: string; customer_note?: boolean; date_created?: string };
 
 const PRODUCT_FIELDS =
   'id,name,permalink,type,status,price,regular_price,sale_price,stock_status,manage_stock,stock_quantity,purchasable,short_description,categories,attributes,variations';
@@ -367,6 +433,66 @@ export const woocommerceApiService = {
       query: { per_page: PER_PAGE, _fields: VARIATION_FIELDS },
     });
     return (data as WooVariation[]) ?? [];
+  },
+
+  /** Ficha completa de un producto. null si no existe. */
+  async fetchProduct(creds: WooCreds, productId: number): Promise<WooProductDetail | null> {
+    return (await getOrNull(creds, `/products/${productId}`)) as WooProductDetail | null;
+  },
+
+  /** Reseñas aprobadas de un producto, las más nuevas primero. */
+  async fetchReviews(creds: WooCreds, productId: number, limit = 10): Promise<WooReview[]> {
+    const { data } = await callOk(creds, 'GET', '/products/reviews', {
+      query: { product: productId, status: 'approved', per_page: limit, orderby: 'date_gmt', order: 'desc' },
+    });
+    return (data as WooReview[]) ?? [];
+  },
+
+  async fetchShippingZones(creds: WooCreds): Promise<WooShippingZone[]> {
+    const { data } = await callOk(creds, 'GET', '/shipping/zones');
+    return (data as WooShippingZone[]) ?? [];
+  },
+
+  async fetchZoneLocations(creds: WooCreds, zoneId: number): Promise<WooZoneLocation[]> {
+    const { data } = await callOk(creds, 'GET', `/shipping/zones/${zoneId}/locations`);
+    return (data as WooZoneLocation[]) ?? [];
+  },
+
+  async fetchZoneMethods(creds: WooCreds, zoneId: number): Promise<WooZoneMethod[]> {
+    const { data } = await callOk(creds, 'GET', `/shipping/zones/${zoneId}/methods`);
+    return (data as WooZoneMethod[]) ?? [];
+  },
+
+  async fetchPaymentGateways(creds: WooCreds): Promise<WooPaymentGateway[]> {
+    const { data } = await callOk(creds, 'GET', '/payment_gateways');
+    return (data as WooPaymentGateway[]) ?? [];
+  },
+
+  /** País con sus provincias (para pasar "Córdoba" → "AR:X"). null si no existe. */
+  async fetchCountry(creds: WooCreds, code: string): Promise<WooCountry | null> {
+    return (await getOrNull(creds, `/data/countries/${encodeURIComponent(code.toLowerCase())}`)) as WooCountry | null;
+  },
+
+  /** País/provincia base de la tienda (ajuste woocommerce_default_country, ej. "AR:C"). */
+  async fetchStoreCountry(creds: WooCreds): Promise<string | null> {
+    const data = (await getOrNull(creds, '/settings/general/woocommerce_default_country')) as { value?: string } | null;
+    return data?.value ?? null;
+  },
+
+  async fetchOrder(creds: WooCreds, orderId: number): Promise<WooOrder | null> {
+    return (await getOrNull(creds, `/orders/${orderId}`)) as WooOrder | null;
+  },
+
+  /** Búsqueda libre de pedidos (sirve para números de pedido de plugins de numeración). */
+  async searchOrders(creds: WooCreds, term: string): Promise<WooOrder[]> {
+    const { data } = await callOk(creds, 'GET', '/orders', { query: { search: term, per_page: 10 } });
+    return (data as WooOrder[]) ?? [];
+  },
+
+  /** Sólo las notas que la tienda marcó para el cliente (las internas nunca salen). */
+  async fetchCustomerNotes(creds: WooCreds, orderId: number): Promise<WooOrderNote[]> {
+    const { data } = await callOk(creds, 'GET', `/orders/${orderId}/notes`, { query: { type: 'customer' } });
+    return ((data as WooOrderNote[]) ?? []).filter((n) => n.customer_note !== false);
   },
 
   async createOrder(creds: WooCreds, input: WooOrderInput): Promise<WooOrder> {
