@@ -50,19 +50,20 @@ MercadoLibre queda afuera: ya es multi-cuenta (`ml_user_id` es la clave, y la co
    cualquier momento después del paso 2.
 5. **Dashboard** (pendiente, ver abajo). Es el que le permite al cliente tener más de una tienda.
 
-## Pendiente: dashboard-tilegra
+## dashboard-tilegra
 
-Hay que hacerlo ANTES de dejar que un cliente conecte la segunda tienda, porque hoy el
-dashboard asume que hay una sola conexión:
-
-- `lib/tiendanube.ts`, `lib/woocommerce.ts` y `lib/shipnow.ts` leen `*_connections` con
-  `.eq("client_id")`. Si usan `.single()` o `.maybeSingle()` revientan con 2 filas.
-- `app/api/auth/tiendanube/disconnect` borra por `client_id` (se lleva todas las tiendas) y
-  bloquea si hay CUALQUIER tool de TiendaNube. Tiene que pasar a desconectar por `connection_id`
-  y bloquear solo si hay tools que apuntan a esa conexión, o tools sin `connection_id` cuando la
-  que se borra es la principal. Revisar lo mismo en los disconnect de Woo y shipnow.
-- Integraciones: listar las tiendas de cada proveedor y agregar un botón "Agregar otra tienda".
-  En TiendaNube el OAuth agrega solo, por la clave natural.
-- Editor de la tool (`lib/tools.ts`): un selector de tienda que guarde `config.connection_id`.
-  Mostrarlo solo si el cliente tiene más de una, y mostrar "principal" cuando no hay id.
-- `app/api/tiendanube/[resource]` (tester): pasar `connection_id`.
+- `lib/{tiendanube,woocommerce,shipnow}.ts`: `listConnections` (la principal primero, sin
+  credenciales) + `toStoreOption`. `getConnection` devuelve la principal (ya no `maybeSingle`).
+- `/api/auth/*/status` suma `stores: StoreOption[]`.
+- `/api/auth/*/disconnect` recibe `{ connection_id }` y desconecta solo esa tienda. Bloquea
+  (409) si hay tools que la usan: las que la apuntan por id y, si es la principal, también las
+  que no tienen id (si no, pasarían en silencio a usar otra tienda). Ver
+  `lib/integration-connections.ts`.
+- Integraciones: cada proveedor lista sus tiendas, con "Desconectar" en cada una y un botón
+  "Agregar otra". Para sumar otra tienda de TiendaNube hay que estar logueado en ESA tienda
+  dentro de TiendaNube, porque su OAuth autoriza la tienda de la sesión.
+- Editor de la tool: con más de una tienda aparece el selector "Tienda". `config.connection_id`
+  se guarda siempre, aunque haya una sola tienda, así una tienda nueva no cambia lo que ya existe.
+- Con más de una tienda, el nombre de la tool lleva un sufijo con la tienda
+  (`tiendanube_buscar_productos_mayorista`) y la descripción arranca con `Tienda "X".`. Dos tools
+  con el mismo nombre en un agente rompen la llamada al modelo.
