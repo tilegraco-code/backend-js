@@ -43,7 +43,7 @@ pedido. Nada de back-office (clientes, reportes, ajustes, webhooks).
 | `get_reviews` | `GET /reviews?product_id=` | `/products/reviews?product=&status=approved` | en vivo |
 | `get_shipping_info` | `GET /shipping?state=&postcode=&country=` | `/shipping/zones` (+ locations y methods), `/data/countries/<c>`, `/settings/general/woocommerce_default_country` | 1h |
 | `get_payment_methods` | `GET /payment-methods` | `/payment_gateways` (sólo activos) | 1h |
-| `get_order_status` | `GET /orders?order_number=` | `/orders/<id>` o `/orders?search=`, `/orders/<id>/notes?type=customer` | en vivo |
+| `get_order_status` | `GET /orders?order_number=&email=` | `/orders/<id>` o `/orders?search=`, `/orders/<id>/notes?type=customer` | en vivo |
 | `create_checkout` | `POST /checkout` | `POST /orders` | — |
 
 - **Envíos:** la zona se elige como WooCommerce (`matchShippingZone`): la primera por `order` cuyas
@@ -51,10 +51,12 @@ pedido. Nada de back-office (clientes, reportes, ajustes, webhooks).
   depende de la provincia o del CP y no vino, se le pide al agente que lo pregunte. La API no cotiza
   carritos: tarifa plana y envío gratis salen exactos; fórmulas (`[qty]`) y métodos de plugins
   (Andreani, OCA) vuelven con `cost: null` y "se calcula al pagar".
-- **Estado del pedido:** sólo con el número (decisión de producto, 2026-10-13). Por eso
-  `shapeOrderStatus` no devuelve nombre, email, teléfono ni dirección exacta (sólo la ciudad), y
-  de las notas sólo las marcadas para el cliente. Se acepta un pedido sólo si su `number` coincide
-  exacto (plugins de numeración secuencial hacen que `number` ≠ `id`).
+- **Estado del pedido:** número + email de la compra (`orderBelongsTo` contra `billing.email`,
+  sin distinguir mayúsculas). Si el email no coincide se responde igual que si el pedido no
+  existiera, para no confirmar qué números son válidos. Aun verificado, `shapeOrderStatus` no
+  devuelve nombre, email, teléfono ni dirección exacta (sólo la ciudad), y de las notas sólo las
+  marcadas para el cliente. Se acepta un pedido sólo si su `number` coincide exacto (plugins de
+  numeración secuencial hacen que `number` ≠ `id`).
 
 ## Checkout
 

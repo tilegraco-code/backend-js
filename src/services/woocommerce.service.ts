@@ -13,6 +13,7 @@ import {
   ShapedProduct,
   ZoneWithRules,
   matchShippingZone,
+  orderBelongsTo,
   resolveStateCode,
   shapeOrderStatus,
   shapeProduct,
@@ -483,17 +484,21 @@ export const woocommerceService = {
   },
 
   /**
-   * Estado de un pedido por número. Sin verificación de identidad (decisión de producto),
-   * por eso shapeOrderStatus no devuelve datos personales.
+   * Estado de un pedido por número + email de la compra. Si el email no coincide se
+   * responde igual que si el pedido no existiera: no le confirmamos a nadie qué números
+   * de pedido son válidos.
    *
    * El número que ve el comprador puede no ser el id interno (plugins de numeración
    * secuencial): sólo aceptamos un pedido cuyo `number` coincida exactamente.
    */
-  async getOrderStatus(clientId: number, rawNumber: string) {
+  async getOrderStatus(clientId: number, rawNumber: string, email: string) {
     const conn = await this.requireConnection(clientId);
     const creds = credsOf(conn);
     const needle = rawNumber.trim().replace(/^#/, '');
     if (!needle) return { found: false, reason: 'No me pasaste un número de pedido.' };
+    if (!email.trim()) {
+      return { found: false, reason: 'Necesito el email con el que se hizo la compra para consultar el pedido.' };
+    }
 
     let order = /^\d+$/.test(needle) ? await woocommerceApiService.fetchOrder(creds, Number(needle)) : null;
     if (order && String(order.number ?? order.id) !== needle) order = null;
@@ -501,10 +506,10 @@ export const woocommerceService = {
       const results = await woocommerceApiService.searchOrders(creds, needle);
       order = results.find((o) => String(o.number ?? o.id) === needle) ?? null;
     }
-    if (!order || order.status === 'trash') {
+    if (!order || order.status === 'trash' || !orderBelongsTo(order, email)) {
       return {
         found: false,
-        reason: `No encontré ningún pedido con el número ${needle}. Pedile al comprador que revise el número en el mail de confirmación de la compra.`,
+        reason: `No encontré ningún pedido con el número ${needle} para ese email. Pedile al comprador que revise el número y el email en el mail de confirmación de la compra.`,
       };
     }
     const notes = await woocommerceApiService.fetchCustomerNotes(creds, order.id).catch(() => []);

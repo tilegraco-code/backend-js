@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { baseOf, normalizeStoreUrl, WooError } from './woocommerce-api.service';
 import {
   matchShippingZone,
+  orderBelongsTo,
   postcodeMatches,
   resolveStateCode,
   shapeOrderStatus,
@@ -172,4 +173,13 @@ test('shapeOrderStatus: pendiente de pago incluye el link para pagar', () => {
   const out = shapeOrderStatus({ id: 1, status: 'pending', payment_url: 'https://t.com/pagar' }, []);
   assert.equal(out.status, 'Pendiente de pago');
   assert.equal(out.payment_url, 'https://t.com/pagar');
+});
+
+test('orderBelongsTo: el email tiene que coincidir (sin importar mayúsculas ni espacios)', () => {
+  const order = { id: 1, billing: { email: 'Ana@Mail.com' } };
+  assert.equal(orderBelongsTo(order, ' ana@mail.com '), true);
+  assert.equal(orderBelongsTo(order, 'otra@mail.com'), false);
+  // Pedido sin email cargado: no se le muestra a nadie.
+  assert.equal(orderBelongsTo({ id: 2 }, ''), false);
+  assert.equal(orderBelongsTo({ id: 2, billing: { email: '' } }, ''), false);
 });

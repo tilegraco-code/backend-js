@@ -287,7 +287,7 @@ export type WooOrder = {
   line_items?: { name?: string; quantity?: number; total?: string }[];
   shipping_lines?: { method_title?: string; total?: string }[];
   shipping?: { city?: string; state?: string; country?: string };
-  billing?: { city?: string; state?: string; country?: string };
+  billing?: { city?: string; state?: string; country?: string; email?: string };
   refunds?: { id: number; reason?: string; total?: string }[];
   [key: string]: unknown;
 };

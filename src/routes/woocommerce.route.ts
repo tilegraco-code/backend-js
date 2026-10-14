@@ -247,22 +247,27 @@ export async function woocommerceRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // GET /api/woocommerce/orders?client_id=&order_number= — tool get_order_status.
-  // Sólo con el número (sin verificar identidad): la respuesta no trae datos personales.
+  // GET /api/woocommerce/orders?client_id=&order_number=&email= — tool get_order_status.
+  // Número + email de la compra; la respuesta igual no trae datos personales.
   r.get(
     '/orders',
     {
       schema: {
         tags: ['woocommerce'],
-        summary: 'Estado de un pedido por número (sin datos personales del comprador)',
+        summary: 'Estado de un pedido por número + email de la compra (sin datos personales)',
         security: [{ InternalToken: [] }],
-        querystring: z.object({ client_id: clientIdSchema, order_number: z.string().min(1) }),
+        querystring: z.object({
+          client_id: clientIdSchema,
+          order_number: z.string().min(1),
+          email: z.string().min(3),
+        }),
         response: { 200: z.unknown(), ...readErrors },
       },
     },
     async (request, reply) => {
       try {
-        return await woocommerceService.getOrderStatus(request.query.client_id, request.query.order_number);
+        const { client_id, order_number, email } = request.query;
+        return await woocommerceService.getOrderStatus(client_id, order_number, email);
       } catch (e) {
         return sendError(request, reply, e, 'No se pudo consultar el pedido en WooCommerce.');
       }

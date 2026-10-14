@@ -275,9 +275,19 @@ const ORDER_STATUS: Record<string, { estado: string; detalle: string }> = {
 };
 
 /**
- * Estado de un pedido para contestarle al comprador. Se consulta sólo con el número,
- * así que NO devolvemos datos personales (nombre, email, teléfono, dirección exacta):
- * cualquiera que adivine un número vería esto. La ciudad alcanza para confirmar el destino.
+ * ¿El pedido es de quien pregunta? El comprador tiene que dar el email con el que compró
+ * además del número: el número solo se adivina (son correlativos).
+ */
+export function orderBelongsTo(order: WooOrder, email: string): boolean {
+  const expected = order.billing?.email?.trim().toLowerCase();
+  return Boolean(expected) && expected === email.trim().toLowerCase();
+}
+
+/**
+ * Estado de un pedido para contestarle al comprador. Aunque se verifica el email, NO
+ * devolvemos datos personales (nombre, email, teléfono, dirección exacta): el agente no
+ * los necesita para contestar y así no quedan en la conversación. La ciudad alcanza
+ * para confirmar el destino.
  */
 export function shapeOrderStatus(order: WooOrder, notes: WooOrderNote[]): Record<string, unknown> {
   const status = order.status ?? '';
