@@ -1,7 +1,9 @@
 // Conexión + caché read-through de TiendaNube.
-// - Conexión: tabla tiendanube_connections (1 fila por client_id).
-// - Caché: tabla tiendanube_cache (snapshot JSON por (client_id, resource), TTL 1h).
+// - Conexión: tabla tiendanube_connections (una fila por tienda, puede haber varias por
+//   cliente; ver lib/integration-connection).
+// - Caché: tabla tiendanube_cache (snapshot JSON por (connection_id, resource), TTL 1h).
 import { supabase } from '../lib/supabase';
+import { findConnection, listConnections, notConnectedMessage } from '../lib/integration-connection';
 import { tiendanubeApiService, TiendanubeStore } from './tiendanube-api.service';
 
 export type CreateCheckoutInput = {
@@ -55,7 +57,7 @@ function pickCurrency(store: TiendanubeStore): string | null {
   return store.main_currency ?? store.currency ?? null;
 }
 
-// Caché en memoria de la moneda por cliente. La moneda casi nunca cambia, así que
+// Caché en memoria de la moneda por conexión. La moneda casi nunca cambia, así que
 // evitamos pegarle a GET /store en cada request. Backend long-running (Fastify): OK.
 const currencyCache = new Map<number, { currency: string | null; ts: number }>();
 const CURRENCY_TTL_MS = 24 * 60 * 60_000; // 24h
@@ -70,14 +72,19 @@ const FETCHERS: Record<
 };
 
 export const tiendanubeService = {
-  async getConnection(clientId: number): Promise<TiendanubeConnection | null> {
-    const { data, error } = await supabase
-      .from('tiendanube_connections')
-      .select('*')
-      .eq('client_id', clientId)
-      .maybeSingle();
-    if (error) throw error;
-    return (data as TiendanubeConnection | null) ?? null;
+  async getConnection(clientId: number, connectionId?: number | null): Promise<TiendanubeConnection | null> {
+    return findConnection<TiendanubeConnection>('tiendanube_connections', clientId, connectionId);
+  },
+
+  async listConnections(clientId: number): Promise<TiendanubeConnection[]> {
+    return listConnections<TiendanubeConnection>('tiendanube_connections', clientId);
+  },
+
+  /** Conexión o error claro para el agente. */
+  async requireConnection(clientId: number, connectionId?: number | null): Promise<TiendanubeConnection> {
+    const conn = await this.getConnection(clientId, connectionId);
+    if (!conn) throw new Error(notConnectedMessage('TiendaNube', connectionId));
+    return conn;
   },
 
   async saveConnection(input: {
@@ -89,6 +96,8 @@ export const tiendanubeService = {
     storeName: string | null;
     storeUrl: string | null;
   }): Promise<void> {
+    // Reconectar la misma tienda actualiza su fila (las tools que la apuntan siguen
+    // andando); otra tienda se suma como una conexión más.
     const { error } = await supabase.from('tiendanube_connections').upsert(
       {
         client_id: input.clientId,
@@ -101,7 +110,7 @@ export const tiendanubeService = {
         connected_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       },
-      { onConflict: 'client_id' },
+      { onConflict: 'client_id,store_id' },
     );
     if (error) throw error;
   },
@@ -123,12 +132,12 @@ export const tiendanubeService = {
    * resuelve con un GET /store la primera vez. Devuelve null si no hay conexión
    * o si TiendaNube no la informa.
    */
-  async getCurrency(clientId: number): Promise<string | null> {
-    const hit = currencyCache.get(clientId);
-    if (hit && Date.now() - hit.ts < CURRENCY_TTL_MS) return hit.currency;
-
-    const conn = await this.getConnection(clientId);
+  async getCurrency(clientId: number, connectionId?: number | null): Promise<string | null> {
+    const conn = await this.getConnection(clientId, connectionId);
     if (!conn) return null;
+
+    const hit = currencyCache.get(conn.id);
+    if (hit && Date.now() - hit.ts < CURRENCY_TTL_MS) return hit.currency;
 
     let currency: string | null = null;
     try {
@@ -138,7 +147,7 @@ export const tiendanubeService = {
       currency = null;
     }
 
-    currencyCache.set(clientId, { currency, ts: Date.now() });
+    currencyCache.set(conn.id, { currency, ts: Date.now() });
     return currency;
   },
 
@@ -149,11 +158,9 @@ export const tiendanubeService = {
   async createCheckout(
     clientId: number,
     input: CreateCheckoutInput,
+    connectionId?: number | null,
   ): Promise<CreateCheckoutResult> {
-    const conn = await this.getConnection(clientId);
-    if (!conn) {
-      throw new Error('Este workspace no tiene TiendaNube conectado');
-    }
+    const conn = await this.requireConnection(clientId, connectionId);
     if (!input.products?.length) {
       throw new Error('Se requiere al menos un producto (variant_id + quantity)');
     }
@@ -178,22 +185,27 @@ export const tiendanubeService = {
       discount: draft.discount ?? null,
       discount_coupon: draft.discount_coupon ?? null,
       discount_gateway: draft.discount_gateway ?? null,
-      currency: await this.getCurrency(clientId),
+      currency: await this.getCurrency(clientId, conn.id),
     };
   },
 
   /**
-   * Núcleo del caché read-through. Devuelve el snapshot del recurso: HIT si
-   * está fresco (expires_at > now), MISS si no (refetch + upsert).
+   * Núcleo del caché read-through. Devuelve el snapshot del recurso de una tienda:
+   * HIT si está fresco (expires_at > now), MISS si no (refetch + upsert).
    */
   async getCachedResource(
     clientId: number,
     resource: TiendanubeResource,
+    connectionId?: number | null,
   ): Promise<{ payload: unknown[]; cached: boolean; fetched_at: string }> {
+    // La conexión primero: el caché es por tienda y, sin connection_id, cuál es la
+    // tienda lo decide findConnection.
+    const conn = await this.requireConnection(clientId, connectionId);
+
     const { data: row, error } = await supabase
       .from('tiendanube_cache')
       .select('payload, fetched_at, expires_at')
-      .eq('client_id', clientId)
+      .eq('connection_id', conn.id)
       .eq('resource', resource)
       .maybeSingle();
     if (error) throw error;
@@ -207,11 +219,6 @@ export const tiendanubeService = {
     }
 
     // MISS: refetch desde TiendaNube y persistir snapshot.
-    const conn = await this.getConnection(clientId);
-    if (!conn) {
-      throw new Error('Este workspace no tiene TiendaNube conectado');
-    }
-
     const payload = await FETCHERS[resource](conn.store_id, conn.access_token);
     const now = new Date();
     const fetchedAt = now.toISOString();
@@ -220,13 +227,14 @@ export const tiendanubeService = {
     const { error: upErr } = await supabase.from('tiendanube_cache').upsert(
       {
         client_id: clientId,
+        connection_id: conn.id,
         resource,
         payload,
         fetched_at: fetchedAt,
         expires_at: expiresAt,
         updated_at: fetchedAt,
       },
-      { onConflict: 'client_id,resource' },
+      { onConflict: 'connection_id,resource' },
     );
     if (upErr) throw upErr;
 

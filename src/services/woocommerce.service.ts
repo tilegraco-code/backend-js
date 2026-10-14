@@ -1,12 +1,15 @@
 // Conexión + lecturas para el agente + armado de pedidos de WooCommerce.
-// - Conexión: tabla woocommerce_connections (1 fila por client_id).
-// - Caché: tabla woocommerce_cache (TTL 1h) para lo que cambia poco y cuesta varios
+// - Conexión: tabla woocommerce_connections (una fila por tienda, puede haber varias por
+//   cliente; ver lib/integration-connection). Todo lo que lee el agente recibe el
+//   connection_id de la tool; sin él se usa la tienda principal.
+// - Caché: tabla woocommerce_cache (por tienda, TTL 1h) para lo que cambia poco y cuesta varios
 //   requests: catálogo (1 por página + 1 por producto variable), configuración de
 //   envíos y medios de pago. Detalle de producto, reseñas y pedidos van en vivo.
 // - Checkout: crea un pedido `pending` y devuelve su payment_url (la página de
 //   WooCommerce para pagar ese pedido). El envío lo define la config de la tool.
 import { supabase } from '../lib/supabase';
 import { signState } from '../lib/oauth-state';
+import { findConnection, listConnections, notConnectedMessage } from '../lib/integration-connection';
 import { filterByQuery } from '../lib/text-search';
 import { WooCountry, WooCreds, WooError, WooOrderInput, woocommerceApiService } from './woocommerce-api.service';
 import {
@@ -37,6 +40,8 @@ export type WoocommerceConnection = {
 
 /** Config de la tool `create_checkout` (la completa el cliente en el dashboard). */
 export type WoocommerceCheckoutConfig = {
+  // Tienda en la que se crea el pedido (sin él, la principal del cliente).
+  connection_id?: number;
   // none = el pedido sale sin envío (retiro en local / se coordina aparte).
   // flat = se suma un envío de costo fijo y el agente pide la dirección.
   shipping_mode?: 'none' | 'flat';
@@ -175,14 +180,12 @@ async function fetchShippingSetup(creds: WooCreds): Promise<ShippingSetup> {
 }
 
 export const woocommerceService = {
-  async getConnection(clientId: number): Promise<WoocommerceConnection | null> {
-    const { data, error } = await supabase
-      .from('woocommerce_connections')
-      .select('*')
-      .eq('client_id', clientId)
-      .maybeSingle();
-    if (error) throw error;
-    return (data as WoocommerceConnection | null) ?? null;
+  async getConnection(clientId: number, connectionId?: number | null): Promise<WoocommerceConnection | null> {
+    return findConnection<WoocommerceConnection>('woocommerce_connections', clientId, connectionId);
+  },
+
+  async listConnections(clientId: number): Promise<WoocommerceConnection[]> {
+    return listConnections<WoocommerceConnection>('woocommerce_connections', clientId);
   },
 
   /**
@@ -221,7 +224,7 @@ export const woocommerceService = {
     consumerKey: string;
     consumerSecret: string;
     keyPermissions?: string | null;
-  }): Promise<{ store_url: string; store_name: string | null; can_write: boolean }> {
+  }): Promise<{ id: number; store_url: string; store_name: string | null; can_write: boolean }> {
     const { storeUrl, name } = await woocommerceApiService.discoverStore(input.storeUrl);
     const consumerKey = input.consumerKey.trim();
     const consumerSecret = input.consumerSecret.trim();
@@ -235,7 +238,7 @@ export const woocommerceService = {
     }
 
     const now = new Date().toISOString();
-    const { error } = await supabase.from('woocommerce_connections').upsert(
+    const { data, error } = await supabase.from('woocommerce_connections').upsert(
       {
         client_id: input.clientId,
         store_url: storeUrl,
@@ -248,14 +251,16 @@ export const woocommerceService = {
         connected_at: now,
         updated_at: now,
       },
-      { onConflict: 'client_id' },
-    );
+      // Reconectar la misma tienda actualiza su fila (las tools que la apuntan siguen
+      // andando); otra tienda se suma como una conexión más.
+      { onConflict: 'client_id,store_url' },
+    ).select('id').single();
     if (error) throw error;
 
-    // Puede ser otra tienda: el catálogo cacheado ya no vale.
-    await supabase.from('woocommerce_cache').delete().eq('client_id', input.clientId);
+    // Claves nuevas (pueden tener otros permisos): lo cacheado de esta tienda se rearma.
+    await supabase.from('woocommerce_cache').delete().eq('connection_id', data.id);
 
-    return { store_url: storeUrl, store_name: name, can_write: permissions.includes('write') };
+    return { id: data.id as number, store_url: storeUrl, store_name: name, can_write: permissions.includes('write') };
   },
 
   /**
@@ -271,9 +276,9 @@ export const woocommerceService = {
     consumerKey: string;
     consumerSecret: string;
     keyPermissions: string | null;
-  }): Promise<void> {
+  }): Promise<{ id: number }> {
     const now = new Date().toISOString();
-    const { error } = await supabase.from('woocommerce_connections').upsert(
+    const { data, error } = await supabase.from('woocommerce_connections').upsert(
       {
         client_id: input.clientId,
         store_url: input.storeUrl,
@@ -284,15 +289,16 @@ export const woocommerceService = {
         connected_at: now,
         updated_at: now,
       },
-      { onConflict: 'client_id' },
-    );
+      { onConflict: 'client_id,store_url' },
+    ).select('id').single();
     if (error) throw error;
-    await supabase.from('woocommerce_cache').delete().eq('client_id', input.clientId);
+    await supabase.from('woocommerce_cache').delete().eq('connection_id', data.id);
+    return { id: data.id as number };
   },
 
   /** Valida las claves guardadas y completa auth_mode / moneda / nombre de la tienda. */
-  async refreshConnectionInfo(clientId: number): Promise<void> {
-    const conn = await this.getConnection(clientId);
+  async refreshConnectionInfo(clientId: number, connectionId: number): Promise<void> {
+    const conn = await this.getConnection(clientId, connectionId);
     if (!conn) return;
     const [{ authMode, currency }, store] = await Promise.all([
       woocommerceApiService.validateKeys(conn.store_url, conn.consumer_key, conn.consumer_secret),
@@ -306,37 +312,40 @@ export const woocommerceService = {
         ...(store?.name ? { store_name: store.name } : {}),
         updated_at: new Date().toISOString(),
       })
-      .eq('client_id', clientId);
+      .eq('id', conn.id);
     if (error) throw error;
   },
 
-  async deleteConnection(clientId: number): Promise<void> {
-    const { error } = await supabase.from('woocommerce_connections').delete().eq('client_id', clientId);
+  /** Sin `connectionId` borra la principal (lo que hacía el dashboard de una sola tienda). */
+  async deleteConnection(clientId: number, connectionId?: number | null): Promise<void> {
+    const conn = await this.getConnection(clientId, connectionId);
+    if (!conn) return;
+    // El caché se va con la conexión (FK on delete cascade).
+    const { error } = await supabase.from('woocommerce_connections').delete().eq('id', conn.id);
     if (error) throw error;
-    await supabase.from('woocommerce_cache').delete().eq('client_id', clientId);
   },
 
   /** Conexión o error claro para el agente. */
-  async requireConnection(clientId: number): Promise<WoocommerceConnection> {
-    const conn = await this.getConnection(clientId);
-    if (!conn) throw new WooError('Este workspace no tiene WooCommerce conectado', 404);
+  async requireConnection(clientId: number, connectionId?: number | null): Promise<WoocommerceConnection> {
+    const conn = await this.getConnection(clientId, connectionId);
+    if (!conn) throw new WooError(notConnectedMessage('WooCommerce', connectionId), 404);
     return conn;
   },
 
   /**
-   * Read-through sobre woocommerce_cache: devuelve el snapshot de `resource` si está
-   * fresco; si no, lo recalcula con `fetcher` y lo guarda. Pedidos concurrentes del
-   * mismo recurso comparten el mismo refetch.
+   * Read-through sobre woocommerce_cache: devuelve el snapshot de `resource` de la
+   * tienda si está fresco; si no, lo recalcula con `fetcher` y lo guarda. Pedidos
+   * concurrentes del mismo recurso comparten el mismo refetch.
    */
   async cached<T>(
-    clientId: number,
+    conn: WoocommerceConnection,
     resource: string,
     fetcher: () => Promise<T>,
   ): Promise<{ payload: T; cached: boolean; fetched_at: string }> {
     const { data: row, error } = await supabase
       .from('woocommerce_cache')
       .select('payload, fetched_at, expires_at')
-      .eq('client_id', clientId)
+      .eq('connection_id', conn.id)
       .eq('resource', resource)
       .maybeSingle();
     if (error) throw error;
@@ -344,7 +353,7 @@ export const woocommerceService = {
       return { payload: row.payload as T, cached: true, fetched_at: row.fetched_at as string };
     }
 
-    const key = `${clientId}:${resource}`;
+    const key = `${conn.id}:${resource}`;
     let pending = inflight.get(key) as Promise<T> | undefined;
     if (!pending) {
       pending = fetcher().finally(() => inflight.delete(key));
@@ -356,23 +365,27 @@ export const woocommerceService = {
     const fetchedAt = now.toISOString();
     const { error: upErr } = await supabase.from('woocommerce_cache').upsert(
       {
-        client_id: clientId,
+        client_id: conn.client_id,
+        connection_id: conn.id,
         resource,
         payload,
         fetched_at: fetchedAt,
         expires_at: new Date(now.getTime() + ttlMs()).toISOString(),
         updated_at: fetchedAt,
       },
-      { onConflict: 'client_id,resource' },
+      { onConflict: 'connection_id,resource' },
     );
     if (upErr) throw upErr;
     return { payload, cached: false, fetched_at: fetchedAt };
   },
 
   /** Catálogo compactado (cacheado). */
-  async getProducts(clientId: number): Promise<{ items: ShapedProduct[]; cached: boolean; fetched_at: string; currency: string | null }> {
-    const conn = await this.requireConnection(clientId);
-    const { payload, cached, fetched_at } = await this.cached(clientId, 'products', () =>
+  async getProducts(
+    clientId: number,
+    connectionId?: number | null,
+  ): Promise<{ items: ShapedProduct[]; cached: boolean; fetched_at: string; currency: string | null }> {
+    const conn = await this.requireConnection(clientId, connectionId);
+    const { payload, cached, fetched_at } = await this.cached(conn, 'products', () =>
       fetchShapedCatalog(credsOf(conn)),
     );
     return { items: payload ?? [], cached, fetched_at, currency: conn.currency };
@@ -382,8 +395,8 @@ export const woocommerceService = {
    * Lo que ve el agente al buscar: filtrado por texto y acotado para no inflar el prompt.
    * Sin texto suma las categorías, para que el agente pueda contar qué vende la tienda.
    */
-  async searchProducts(clientId: number, query?: string) {
-    const { items, cached, fetched_at, currency } = await this.getProducts(clientId);
+  async searchProducts(clientId: number, query?: string, connectionId?: number | null) {
+    const { items, cached, fetched_at, currency } = await this.getProducts(clientId, connectionId);
     const matches = filterByQuery(items, query);
     const categories = query?.trim() ? null : countCategories(items);
     return {
@@ -400,8 +413,8 @@ export const woocommerceService = {
   },
 
   /** Ficha completa de un producto, en vivo (precio y stock al momento). */
-  async getProductDetail(clientId: number, productId: number) {
-    const conn = await this.requireConnection(clientId);
+  async getProductDetail(clientId: number, productId: number, connectionId?: number | null) {
+    const conn = await this.requireConnection(clientId, connectionId);
     const creds = credsOf(conn);
     const product = await woocommerceApiService.fetchProduct(creds, productId);
     if (!product || (product.status && product.status !== 'publish')) {
@@ -415,8 +428,8 @@ export const woocommerceService = {
   },
 
   /** Últimas reseñas aprobadas de un producto. */
-  async getReviews(clientId: number, productId: number) {
-    const conn = await this.requireConnection(clientId);
+  async getReviews(clientId: number, productId: number, connectionId?: number | null) {
+    const conn = await this.requireConnection(clientId, connectionId);
     const reviews = await woocommerceApiService.fetchReviews(credsOf(conn), productId);
     if (reviews.length === 0) {
       return { product_id: productId, count: 0, reviews: [], note: 'Este producto todavía no tiene reseñas.' };
@@ -430,10 +443,14 @@ export const woocommerceService = {
    * Opciones de envío para un destino. Zonas, ubicaciones y métodos se cachean juntos
    * (cambian poco y son 1 + 2×zonas requests). La provincia se acepta por nombre.
    */
-  async getShippingOptions(clientId: number, input: { country?: string; state?: string; postcode?: string }) {
-    const conn = await this.requireConnection(clientId);
+  async getShippingOptions(
+    clientId: number,
+    input: { country?: string; state?: string; postcode?: string },
+    connectionId?: number | null,
+  ) {
+    const conn = await this.requireConnection(clientId, connectionId);
     const creds = credsOf(conn);
-    const { payload } = await this.cached(clientId, 'shipping', () => fetchShippingSetup(creds));
+    const { payload } = await this.cached(conn, 'shipping', () => fetchShippingSetup(creds));
 
     const country = (input.country?.trim() || payload.store_country || '').toUpperCase().slice(0, 2);
     if (!country) {
@@ -470,9 +487,9 @@ export const woocommerceService = {
   },
 
   /** Medios de pago activos (cacheado). */
-  async getPaymentMethods(clientId: number) {
-    const conn = await this.requireConnection(clientId);
-    const { payload } = await this.cached(clientId, 'payment_methods', async () => {
+  async getPaymentMethods(clientId: number, connectionId?: number | null) {
+    const conn = await this.requireConnection(clientId, connectionId);
+    const { payload } = await this.cached(conn, 'payment_methods', async () => {
       const gateways = await woocommerceApiService.fetchPaymentGateways(credsOf(conn));
       return gateways
         .filter((g) => g.enabled)
@@ -494,8 +511,12 @@ export const woocommerceService = {
    * El número que ve el comprador puede no ser el id interno (plugins de numeración
    * secuencial): sólo aceptamos un pedido cuyo `number` coincida exactamente.
    */
-  async getOrderStatus(clientId: number, input: { orderNumber?: string; email?: string }) {
-    const conn = await this.requireConnection(clientId);
+  async getOrderStatus(
+    clientId: number,
+    input: { orderNumber?: string; email?: string },
+    connectionId?: number | null,
+  ) {
+    const conn = await this.requireConnection(clientId, connectionId);
     const creds = credsOf(conn);
     const needle = (input.orderNumber ?? '').trim().replace(/^#/, '');
     const email = (input.email ?? '').trim();
@@ -559,10 +580,19 @@ export const woocommerceService = {
   /**
    * Crea un pedido pendiente de pago y devuelve el link para pagarlo. WooCommerce
    * calcula precios e impuestos con los valores actuales de la tienda.
+   *
+   * La tienda sale de la config de la tool (la fuente de verdad, ya que la leemos
+   * igual por el envío); `connectionId` es lo que mandó el runtime, por si la config
+   * no la tiene.
    */
-  async createCheckout(clientId: number, toolId: number, input: WoocommerceCheckoutInput) {
-    const conn = await this.getConnection(clientId);
-    if (!conn) throw new WooError('Este workspace no tiene WooCommerce conectado', 404);
+  async createCheckout(
+    clientId: number,
+    toolId: number,
+    input: WoocommerceCheckoutInput,
+    connectionId?: number | null,
+  ) {
+    const config = await this.loadCheckoutConfig(toolId, clientId);
+    const conn = await this.requireConnection(clientId, Number(config.connection_id) || connectionId);
     if (conn.key_permissions && !conn.key_permissions.includes('write')) {
       throw new WooError(
         'Las claves de WooCommerce son de sólo lectura. Reconectá la tienda con permisos de Lectura/Escritura.',
@@ -572,12 +602,10 @@ export const woocommerceService = {
       throw new WooError('Se requiere al menos un producto (product_id + quantity).');
     }
 
-    const config = await this.loadCheckoutConfig(toolId, clientId);
-
     // Un producto variable sin variation_id genera una línea sin talle/color: cortar
     // acá con un mensaje que el agente entienda. Si el producto no está en el catálogo
     // cacheado (recién creado) dejamos que WooCommerce decida.
-    const { items: catalog } = await this.getProducts(clientId).catch(() => ({ items: [] as ShapedProduct[] }));
+    const { items: catalog } = await this.getProducts(clientId, conn.id).catch(() => ({ items: [] as ShapedProduct[] }));
     const byId = new Map(catalog.map((p) => [p.product_id, p]));
     for (const line of input.products) {
       const p = byId.get(line.product_id);
