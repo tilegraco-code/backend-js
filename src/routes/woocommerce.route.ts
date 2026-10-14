@@ -6,6 +6,8 @@ import { WooError } from '../services/woocommerce-api.service';
 
 const errorResponseSchema = z.object({ error: z.string() });
 const clientIdSchema = z.coerce.number().int().positive();
+// Tienda que eligió la tool (agent_tools.config.connection_id). Sin él, la principal.
+const connectionIdSchema = z.coerce.number().int().positive().optional();
 
 /** WooError trae un mensaje pensado para el usuario/agente; el resto se loguea y se generaliza. */
 function sendError(request: FastifyRequest, reply: FastifyReply, e: unknown, fallback: string) {
@@ -25,27 +27,45 @@ export async function woocommerceRoutes(app: FastifyInstance): Promise<void> {
     {
       schema: {
         tags: ['woocommerce'],
-        summary: 'Estado de conexión de WooCommerce para un cliente',
+        summary: 'Tiendas WooCommerce conectadas de un cliente',
         security: [{ InternalToken: [] }],
         querystring: z.object({ client_id: clientIdSchema }),
         response: {
+          // Los campos sueltos son de la principal (compat con el dashboard de una sola tienda).
           200: z.object({
             connected: z.boolean(),
             store_url: z.string().nullable(),
             store_name: z.string().nullable(),
             can_write: z.boolean(),
+            connections: z.array(
+              z.object({
+                id: z.number(),
+                store_url: z.string(),
+                store_name: z.string().nullable(),
+                can_write: z.boolean(),
+                connected_at: z.string(),
+              }),
+            ),
           }),
           500: errorResponseSchema,
         },
       },
     },
     async (request) => {
-      const conn = await woocommerceService.getConnection(request.query.client_id);
+      const all = await woocommerceService.listConnections(request.query.client_id);
+      const main = all[0];
       return {
-        connected: Boolean(conn),
-        store_url: conn?.store_url ?? null,
-        store_name: conn?.store_name ?? null,
-        can_write: Boolean(conn?.key_permissions?.includes('write')),
+        connected: Boolean(main),
+        store_url: main?.store_url ?? null,
+        store_name: main?.store_name ?? null,
+        can_write: Boolean(main?.key_permissions?.includes('write')),
+        connections: all.map((c) => ({
+          id: c.id,
+          store_url: c.store_url,
+          store_name: c.store_name,
+          can_write: Boolean(c.key_permissions?.includes('write')),
+          connected_at: c.connected_at,
+        })),
       };
     },
   );
@@ -96,6 +116,7 @@ export async function woocommerceRoutes(app: FastifyInstance): Promise<void> {
         response: {
           200: z.object({
             connected: z.literal(true),
+            id: z.number(),
             store_url: z.string(),
             store_name: z.string().nullable(),
             can_write: z.boolean(),
@@ -128,14 +149,14 @@ export async function woocommerceRoutes(app: FastifyInstance): Promise<void> {
     {
       schema: {
         tags: ['woocommerce'],
-        summary: 'Borra la conexión de WooCommerce del cliente',
+        summary: 'Borra una tienda WooCommerce del cliente (sin connection_id, la principal)',
         security: [{ InternalToken: [] }],
-        body: z.object({ client_id: clientIdSchema }),
+        body: z.object({ client_id: clientIdSchema, connection_id: connectionIdSchema }),
         response: { 200: z.object({ ok: z.literal(true) }), 500: errorResponseSchema },
       },
     },
     async (request) => {
-      await woocommerceService.deleteConnection(request.body.client_id);
+      await woocommerceService.deleteConnection(request.body.client_id, request.body.connection_id);
       return { ok: true as const };
     },
   );
@@ -148,7 +169,7 @@ export async function woocommerceRoutes(app: FastifyInstance): Promise<void> {
     502: errorResponseSchema,
   };
 
-  // GET /api/woocommerce/products?client_id=&query=&product_id= — tool search_products.
+  // GET /api/woocommerce/products?client_id=&connection_id=&query=&product_id= — tool search_products.
   // Con product_id devuelve la ficha completa de ese producto (en vivo); si no, busca
   // en el catálogo cacheado.
   r.get(
@@ -160,6 +181,7 @@ export async function woocommerceRoutes(app: FastifyInstance): Promise<void> {
         security: [{ InternalToken: [] }],
         querystring: z.object({
           client_id: clientIdSchema,
+          connection_id: connectionIdSchema,
           query: z.string().optional(),
           product_id: z.coerce.number().int().positive().optional(),
         }),
@@ -167,11 +189,11 @@ export async function woocommerceRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     async (request, reply) => {
-      const { client_id, query, product_id } = request.query;
+      const { client_id, connection_id, query, product_id } = request.query;
       try {
         return product_id
-          ? await woocommerceService.getProductDetail(client_id, product_id)
-          : await woocommerceService.searchProducts(client_id, query);
+          ? await woocommerceService.getProductDetail(client_id, product_id, connection_id)
+          : await woocommerceService.searchProducts(client_id, query, connection_id);
       } catch (e) {
         return sendError(request, reply, e, 'No se pudieron leer los productos de WooCommerce.');
       }
@@ -186,13 +208,18 @@ export async function woocommerceRoutes(app: FastifyInstance): Promise<void> {
         tags: ['woocommerce'],
         summary: 'Últimas reseñas aprobadas de un producto',
         security: [{ InternalToken: [] }],
-        querystring: z.object({ client_id: clientIdSchema, product_id: z.coerce.number().int().positive() }),
+        querystring: z.object({
+          client_id: clientIdSchema,
+          connection_id: connectionIdSchema,
+          product_id: z.coerce.number().int().positive(),
+        }),
         response: { 200: z.unknown(), ...readErrors },
       },
     },
     async (request, reply) => {
       try {
-        return await woocommerceService.getReviews(request.query.client_id, request.query.product_id);
+        const { client_id, product_id, connection_id } = request.query;
+        return await woocommerceService.getReviews(client_id, product_id, connection_id);
       } catch (e) {
         return sendError(request, reply, e, 'No se pudieron leer las reseñas de WooCommerce.');
       }
@@ -209,6 +236,7 @@ export async function woocommerceRoutes(app: FastifyInstance): Promise<void> {
         security: [{ InternalToken: [] }],
         querystring: z.object({
           client_id: clientIdSchema,
+          connection_id: connectionIdSchema,
           country: z.string().optional(),
           state: z.string().optional(),
           postcode: z.string().optional(),
@@ -217,9 +245,9 @@ export async function woocommerceRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     async (request, reply) => {
-      const { client_id, ...dest } = request.query;
+      const { client_id, connection_id, ...dest } = request.query;
       try {
-        return await woocommerceService.getShippingOptions(client_id, dest);
+        return await woocommerceService.getShippingOptions(client_id, dest, connection_id);
       } catch (e) {
         return sendError(request, reply, e, 'No se pudieron leer los envíos de WooCommerce.');
       }
@@ -234,13 +262,13 @@ export async function woocommerceRoutes(app: FastifyInstance): Promise<void> {
         tags: ['woocommerce'],
         summary: 'Medios de pago activos de la tienda (cacheado 1h)',
         security: [{ InternalToken: [] }],
-        querystring: z.object({ client_id: clientIdSchema }),
+        querystring: z.object({ client_id: clientIdSchema, connection_id: connectionIdSchema }),
         response: { 200: z.unknown(), ...readErrors },
       },
     },
     async (request, reply) => {
       try {
-        return await woocommerceService.getPaymentMethods(request.query.client_id);
+        return await woocommerceService.getPaymentMethods(request.query.client_id, request.query.connection_id);
       } catch (e) {
         return sendError(request, reply, e, 'No se pudieron leer los medios de pago de WooCommerce.');
       }
@@ -259,6 +287,7 @@ export async function woocommerceRoutes(app: FastifyInstance): Promise<void> {
         security: [{ InternalToken: [] }],
         querystring: z.object({
           client_id: clientIdSchema,
+          connection_id: connectionIdSchema,
           order_number: z.string().optional(),
           email: z.string().optional(),
         }),
@@ -267,8 +296,8 @@ export async function woocommerceRoutes(app: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       try {
-        const { client_id, order_number, email } = request.query;
-        return await woocommerceService.getOrderStatus(client_id, { orderNumber: order_number, email });
+        const { client_id, connection_id, order_number, email } = request.query;
+        return await woocommerceService.getOrderStatus(client_id, { orderNumber: order_number, email }, connection_id);
       } catch (e) {
         return sendError(request, reply, e, 'No se pudo consultar el pedido en WooCommerce.');
       }
@@ -287,6 +316,7 @@ export async function woocommerceRoutes(app: FastifyInstance): Promise<void> {
         body: z.object({
           client_id: clientIdSchema,
           tool_id: z.coerce.number().int().positive(),
+          connection_id: connectionIdSchema,
           name: z.string().min(1),
           lastname: z.string().optional(),
           email: z.string().email(),
@@ -330,9 +360,9 @@ export async function woocommerceRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     async (request, reply) => {
-      const { client_id, tool_id, ...input } = request.body;
+      const { client_id, tool_id, connection_id, ...input } = request.body;
       try {
-        return await woocommerceService.createCheckout(client_id, tool_id, input);
+        return await woocommerceService.createCheckout(client_id, tool_id, input, connection_id);
       } catch (e) {
         return sendError(request, reply, e, 'No se pudo crear el pedido en WooCommerce.');
       }

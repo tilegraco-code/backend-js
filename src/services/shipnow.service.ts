@@ -1,8 +1,10 @@
 // Conexión + consulta de estado de envíos en shipnow.
-// - Conexión: tabla shipnow_connections (1 fila por client_id), token fijo sin OAuth.
+// - Conexión: tabla shipnow_connections (una fila por cuenta, puede haber varias por
+//   cliente; ver lib/integration-connection), token fijo sin OAuth.
 // - Consulta: no cacheamos. A diferencia de los productos de TiendaNube, el estado
 //   de un envío cambia durante el día y una respuesta vieja es peor que una lenta.
 import { supabase } from '../lib/supabase';
+import { findConnection, listConnections, notConnectedMessage } from '../lib/integration-connection';
 import { shipnowApiService, ShipnowOrder } from './shipnow-api.service';
 
 export type ShipnowConnection = {
@@ -129,38 +131,51 @@ function shapeOrder(order: ShipnowOrder): Record<string, unknown> {
 }
 
 export const shipnowService = {
-  async getConnection(clientId: number): Promise<ShipnowConnection | null> {
-    const { data, error } = await supabase
-      .from('shipnow_connections')
-      .select('*')
-      .eq('client_id', clientId)
-      .maybeSingle();
-    if (error) throw error;
-    return (data as ShipnowConnection | null) ?? null;
+  async getConnection(clientId: number, connectionId?: number | null): Promise<ShipnowConnection | null> {
+    return findConnection<ShipnowConnection>('shipnow_connections', clientId, connectionId);
   },
 
-  /** Valida el token contra shipnow y lo guarda. Lanza si shipnow lo rechaza. */
-  async saveConnection(clientId: number, apiToken: string): Promise<{ account_name: string | null }> {
+  async listConnections(clientId: number): Promise<ShipnowConnection[]> {
+    return listConnections<ShipnowConnection>('shipnow_connections', clientId);
+  },
+
+  /**
+   * Valida el token contra shipnow y lo guarda. Lanza si shipnow lo rechaza.
+   * Con `connectionId` reemplaza el token de esa conexión (mismo id, las tools que la
+   * apuntan siguen andando); sin él agrega una cuenta, o actualiza la que ya tenga ese token.
+   */
+  async saveConnection(
+    clientId: number,
+    apiToken: string,
+    connectionId?: number | null,
+  ): Promise<{ id: number; account_name: string | null }> {
     const { accountName } = await shipnowApiService.validateToken(apiToken);
 
     const now = new Date().toISOString();
-    const { error } = await supabase.from('shipnow_connections').upsert(
-      {
-        client_id: clientId,
-        api_token: apiToken,
-        account_name: accountName,
-        connected_at: now,
-        updated_at: now,
-      },
-      { onConflict: 'client_id' },
-    );
+    const row = {
+      client_id: clientId,
+      api_token: apiToken,
+      account_name: accountName,
+      connected_at: now,
+      updated_at: now,
+    };
+    const { data, error } = await (connectionId
+      ? supabase.from('shipnow_connections').update(row).eq('id', connectionId).eq('client_id', clientId)
+      : supabase.from('shipnow_connections').upsert(row, { onConflict: 'client_id,api_token' })
+    )
+      .select('id')
+      .maybeSingle();
     if (error) throw error;
+    if (!data) throw new Error('La conexión de shipnow que querés actualizar no existe');
 
-    return { account_name: accountName };
+    return { id: data.id as number, account_name: accountName };
   },
 
-  async deleteConnection(clientId: number): Promise<void> {
-    const { error } = await supabase.from('shipnow_connections').delete().eq('client_id', clientId);
+  /** Sin `connectionId` borra la principal (lo que hacía el dashboard de una sola cuenta). */
+  async deleteConnection(clientId: number, connectionId?: number | null): Promise<void> {
+    const conn = await this.getConnection(clientId, connectionId);
+    if (!conn) return;
+    const { error } = await supabase.from('shipnow_connections').delete().eq('id', conn.id);
     if (error) throw error;
   },
 
@@ -176,10 +191,11 @@ export const shipnowService = {
   async findOrder(
     clientId: number,
     orderNumber: string,
+    connectionId?: number | null,
   ): Promise<{ encontrado: boolean; [key: string]: unknown }> {
-    const conn = await this.getConnection(clientId);
+    const conn = await this.getConnection(clientId, connectionId);
     if (!conn) {
-      throw new Error('Este workspace no tiene shipnow conectado');
+      throw new Error(notConnectedMessage('shipnow', connectionId));
     }
 
     const needle = orderNumber.trim().replace(/^#/, '');

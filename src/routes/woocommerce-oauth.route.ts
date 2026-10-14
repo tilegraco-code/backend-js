@@ -36,14 +36,15 @@ export async function woocommerceOauthRoutes(app: FastifyInstance): Promise<void
         return reply.status(400).send({ error: 'state inválido o vencido' });
       }
 
+      let connectionId: number;
       try {
-        await woocommerceService.saveFromAuthorize({
+        ({ id: connectionId } = await woocommerceService.saveFromAuthorize({
           clientId: state.client_id,
           storeUrl,
           consumerKey: request.body.consumer_key,
           consumerSecret: request.body.consumer_secret,
           keyPermissions: request.body.key_permissions ?? null,
-        });
+        }));
       } catch (e) {
         request.log.error({ err: e, clientId: state.client_id }, 'woocommerce callback: no se pudo guardar la conexión');
         return reply.status(500).send({ error: 'No se pudo guardar la conexión' });
@@ -52,7 +53,7 @@ export async function woocommerceOauthRoutes(app: FastifyInstance): Promise<void
       // Validación contra la tienda fuera de este request (ver saveFromAuthorize). Un
       // pequeño delay deja que WordPress termine de responder y libere el worker.
       setTimeout(() => {
-        woocommerceService.refreshConnectionInfo(state.client_id).catch((err) => {
+        woocommerceService.refreshConnectionInfo(state.client_id, connectionId).catch((err) => {
           request.log.error({ err, clientId: state.client_id }, 'woocommerce callback: validación posterior falló');
         });
       }, 3_000);

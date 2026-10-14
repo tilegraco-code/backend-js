@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { shipnowService } from '../services/shipnow.service';
 
 const errorResponseSchema = z.object({ error: z.string() });
+// Opcional en todas las rutas: sin él se usa la cuenta principal (la más vieja).
+const connectionIdSchema = z.coerce.number().int().positive().optional();
 
 export async function shipnowRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
@@ -14,30 +16,37 @@ export async function shipnowRoutes(app: FastifyInstance): Promise<void> {
     {
       schema: {
         tags: ['shipnow'],
-        summary: 'Estado de conexión de shipnow para un cliente',
+        summary: 'Cuentas de shipnow conectadas de un cliente',
         security: [{ InternalToken: [] }],
         querystring: z.object({ client_id: z.coerce.number().int().positive() }),
         response: {
+          // Los campos sueltos son de la principal (compat con el dashboard de una sola cuenta).
           200: z.object({
             connected: z.boolean(),
             account_name: z.string().nullable(),
             connected_at: z.string().nullable(),
+            connections: z.array(
+              z.object({ id: z.number(), account_name: z.string().nullable(), connected_at: z.string() }),
+            ),
           }),
           500: errorResponseSchema,
         },
       },
     },
     async (request) => {
-      const conn = await shipnowService.getConnection(request.query.client_id);
+      const all = await shipnowService.listConnections(request.query.client_id);
+      const main = all[0];
       return {
-        connected: Boolean(conn),
-        account_name: conn?.account_name ?? null,
-        connected_at: conn?.connected_at ?? null,
+        connected: Boolean(main),
+        account_name: main?.account_name ?? null,
+        connected_at: main?.connected_at ?? null,
+        connections: all.map((c) => ({ id: c.id, account_name: c.account_name, connected_at: c.connected_at })),
       };
     },
   );
 
-  // POST /api/shipnow/connect — guarda el token del cliente.
+  // POST /api/shipnow/connect — guarda el token de una cuenta del cliente. Con
+  // connection_id reemplaza el token de esa cuenta; sin él agrega una.
   //
   // shipnow no tiene OAuth: el token lo pide el dueño de la cuenta por mail y lo
   // pega en el dashboard. Lo validamos contra la API antes de guardarlo para no
@@ -52,9 +61,10 @@ export async function shipnowRoutes(app: FastifyInstance): Promise<void> {
         body: z.object({
           client_id: z.coerce.number().int().positive(),
           api_token: z.string().min(10),
+          connection_id: connectionIdSchema,
         }),
         response: {
-          200: z.object({ connected: z.literal(true), account_name: z.string().nullable() }),
+          200: z.object({ connected: z.literal(true), id: z.number(), account_name: z.string().nullable() }),
           400: errorResponseSchema,
           500: errorResponseSchema,
         },
@@ -62,11 +72,12 @@ export async function shipnowRoutes(app: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       try {
-        const { account_name } = await shipnowService.saveConnection(
+        const { id, account_name } = await shipnowService.saveConnection(
           request.body.client_id,
           request.body.api_token.trim(),
+          request.body.connection_id,
         );
-        return { connected: true as const, account_name };
+        return { connected: true as const, id, account_name };
       } catch (e) {
         request.log.error({ err: e }, 'shipnow connect falló');
         return reply.status(400).send({
@@ -85,20 +96,21 @@ export async function shipnowRoutes(app: FastifyInstance): Promise<void> {
     {
       schema: {
         tags: ['shipnow'],
-        summary: 'Borra la conexión de shipnow del cliente',
+        summary: 'Borra una cuenta de shipnow del cliente (sin connection_id, la principal)',
         security: [{ InternalToken: [] }],
-        body: z.object({ client_id: z.coerce.number().int().positive() }),
+        body: z.object({ client_id: z.coerce.number().int().positive(), connection_id: connectionIdSchema }),
         response: { 200: z.object({ ok: z.literal(true) }), 500: errorResponseSchema },
       },
     },
     async (request) => {
-      await shipnowService.deleteConnection(request.body.client_id);
+      await shipnowService.deleteConnection(request.body.client_id, request.body.connection_id);
       return { ok: true as const };
     },
   );
 
-  // GET /api/shipnow/orders?client_id=&order_number=
-  // Es el endpoint que consume la tool del agente (runtime LangGraph).
+  // GET /api/shipnow/orders?client_id=&order_number=&connection_id=
+  // Es el endpoint que consume la tool del agente (runtime LangGraph). connection_id es
+  // la cuenta que eligió la tool (agent_tools.config.connection_id).
   r.get(
     '/orders',
     {
@@ -109,13 +121,15 @@ export async function shipnowRoutes(app: FastifyInstance): Promise<void> {
         querystring: z.object({
           client_id: z.coerce.number().int().positive(),
           order_number: z.string().min(1),
+          connection_id: connectionIdSchema,
         }),
         response: { 200: z.unknown(), 404: errorResponseSchema, 500: errorResponseSchema },
       },
     },
     async (request, reply) => {
       try {
-        return await shipnowService.findOrder(request.query.client_id, request.query.order_number);
+        const { client_id, order_number, connection_id } = request.query;
+        return await shipnowService.findOrder(client_id, order_number, connection_id);
       } catch (e) {
         return reply.status(404).send({ error: (e as Error).message });
       }

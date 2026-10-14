@@ -5,6 +5,8 @@ import { tiendanubeService } from '../services/tiendanube.service';
 import { filterByQuery } from '../lib/text-search';
 
 const errorResponseSchema = z.object({ error: z.string() });
+// Tienda que eligió la tool (agent_tools.config.connection_id). Sin él, la principal.
+const connectionIdSchema = z.coerce.number().int().positive().optional();
 
 function filterByStatus(items: unknown[], status?: string): unknown[] {
   if (!status) return items;
@@ -109,30 +111,48 @@ export async function tiendanubeRoutes(app: FastifyInstance): Promise<void> {
     {
       schema: {
         tags: ['tiendanube'],
-        summary: 'Estado de conexión de TiendaNube para un cliente',
+        summary: 'Tiendas de TiendaNube conectadas de un cliente',
         security: [{ InternalToken: [] }],
         querystring: z.object({ client_id: z.coerce.number().int().positive() }),
         response: {
+          // Los campos sueltos son de la principal (compat con el dashboard de una sola tienda).
           200: z.object({
             connected: z.boolean(),
             store_name: z.string().nullable(),
             store_url: z.string().nullable(),
+            connections: z.array(
+              z.object({
+                id: z.number(),
+                store_id: z.number(),
+                store_name: z.string().nullable(),
+                store_url: z.string().nullable(),
+                connected_at: z.string(),
+              }),
+            ),
           }),
           500: errorResponseSchema,
         },
       },
     },
     async (request) => {
-      const conn = await tiendanubeService.getConnection(request.query.client_id);
+      const all = await tiendanubeService.listConnections(request.query.client_id);
+      const main = all[0];
       return {
-        connected: Boolean(conn),
-        store_name: conn?.store_name ?? null,
-        store_url: conn?.store_url ?? null,
+        connected: Boolean(main),
+        store_name: main?.store_name ?? null,
+        store_url: main?.store_url ?? null,
+        connections: all.map((c) => ({
+          id: c.id,
+          store_id: c.store_id,
+          store_name: c.store_name,
+          store_url: c.store_url,
+          connected_at: c.connected_at,
+        })),
       };
     },
   );
 
-  // GET /api/tiendanube/products?client_id=&query=
+  // GET /api/tiendanube/products?client_id=&query=&connection_id=
   r.get(
     '/products',
     {
@@ -143,15 +163,17 @@ export async function tiendanubeRoutes(app: FastifyInstance): Promise<void> {
         querystring: z.object({
           client_id: z.coerce.number().int().positive(),
           query: z.string().optional(),
+          connection_id: connectionIdSchema,
         }),
         response: { 200: z.unknown(), 404: errorResponseSchema, 500: errorResponseSchema },
       },
     },
     async (request, reply) => {
       try {
+        const { client_id, connection_id } = request.query;
         const [{ payload, cached, fetched_at }, currency] = await Promise.all([
-          tiendanubeService.getCachedResource(request.query.client_id, 'products'),
-          tiendanubeService.getCurrency(request.query.client_id),
+          tiendanubeService.getCachedResource(client_id, 'products', connection_id),
+          tiendanubeService.getCurrency(client_id, connection_id),
         ]);
         // Compactar (saca imágenes, expone precio/stock/moneda de variants) y luego filtrar.
         const shaped = shapeProducts(payload, currency);
@@ -163,7 +185,7 @@ export async function tiendanubeRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // GET /api/tiendanube/orders?client_id=&status=
+  // GET /api/tiendanube/orders?client_id=&status=&connection_id=
   r.get(
     '/orders',
     {
@@ -174,6 +196,7 @@ export async function tiendanubeRoutes(app: FastifyInstance): Promise<void> {
         querystring: z.object({
           client_id: z.coerce.number().int().positive(),
           status: z.string().optional(),
+          connection_id: connectionIdSchema,
         }),
         response: { 200: z.unknown(), 404: errorResponseSchema, 500: errorResponseSchema },
       },
@@ -183,6 +206,7 @@ export async function tiendanubeRoutes(app: FastifyInstance): Promise<void> {
         const { payload, cached, fetched_at } = await tiendanubeService.getCachedResource(
           request.query.client_id,
           'orders',
+          request.query.connection_id,
         );
         const items = filterByStatus(payload, request.query.status);
         return { items, count: items.length, cached, fetched_at };
@@ -202,6 +226,7 @@ export async function tiendanubeRoutes(app: FastifyInstance): Promise<void> {
         security: [{ InternalToken: [] }],
         body: z.object({
           client_id: z.coerce.number().int().positive(),
+          connection_id: connectionIdSchema,
           name: z.string().min(1),
           lastname: z.string().optional(),
           email: z.string().email(),
@@ -233,14 +258,8 @@ export async function tiendanubeRoutes(app: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       try {
-        const result = await tiendanubeService.createCheckout(request.body.client_id, {
-          name: request.body.name,
-          lastname: request.body.lastname,
-          email: request.body.email,
-          phone: request.body.phone,
-          products: request.body.products,
-          note: request.body.note,
-        });
+        const { client_id, connection_id, ...input } = request.body;
+        const result = await tiendanubeService.createCheckout(client_id, input, connection_id);
         return result;
       } catch (e) {
         return reply.status(400).send({ error: (e as Error).message });
@@ -248,7 +267,7 @@ export async function tiendanubeRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // GET /api/tiendanube/carts?client_id=
+  // GET /api/tiendanube/carts?client_id=&connection_id=
   r.get(
     '/carts',
     {
@@ -256,7 +275,10 @@ export async function tiendanubeRoutes(app: FastifyInstance): Promise<void> {
         tags: ['tiendanube'],
         summary: 'Carritos / checkouts abandonados (cacheado 1h)',
         security: [{ InternalToken: [] }],
-        querystring: z.object({ client_id: z.coerce.number().int().positive() }),
+        querystring: z.object({
+          client_id: z.coerce.number().int().positive(),
+          connection_id: connectionIdSchema,
+        }),
         response: { 200: z.unknown(), 404: errorResponseSchema, 500: errorResponseSchema },
       },
     },
@@ -265,6 +287,7 @@ export async function tiendanubeRoutes(app: FastifyInstance): Promise<void> {
         const { payload, cached, fetched_at } = await tiendanubeService.getCachedResource(
           request.query.client_id,
           'carts',
+          request.query.connection_id,
         );
         return { items: payload, count: payload.length, cached, fetched_at };
       } catch (e) {
