@@ -483,9 +483,11 @@ export const woocommerceApiService = {
     return (await getOrNull(creds, `/orders/${orderId}`)) as WooOrder | null;
   },
 
-  /** Búsqueda libre de pedidos (sirve para números de pedido de plugins de numeración). */
+  /** Búsqueda libre de pedidos, los más nuevos primero (por número de plugin o por email). */
   async searchOrders(creds: WooCreds, term: string): Promise<WooOrder[]> {
-    const { data } = await callOk(creds, 'GET', '/orders', { query: { search: term, per_page: 10 } });
+    const { data } = await callOk(creds, 'GET', '/orders', {
+      query: { search: term, per_page: 20, orderby: 'date', order: 'desc' },
+    });
     return (data as WooOrder[]) ?? [];
   },
 

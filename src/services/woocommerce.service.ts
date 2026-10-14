@@ -65,6 +65,7 @@ export type WoocommerceCheckoutInput = {
 export const AUTHORIZE_STATE_MAX_AGE_MS = 30 * 60_000;
 
 const MAX_SEARCH_RESULTS = 30;
+const MAX_ORDERS_BY_EMAIL = 5;
 const VARIATION_CONCURRENCY = 5;
 
 function ttlMs(): number {
@@ -484,20 +485,42 @@ export const woocommerceService = {
   },
 
   /**
-   * Estado de un pedido por número + email de la compra. Si el email no coincide se
-   * responde igual que si el pedido no existiera: no le confirmamos a nadie qué números
-   * de pedido son válidos.
+   * Estado de pedidos por número O email de la compra (decisión de producto, 2026-10-14):
+   *  - número (+ email opcional): ese pedido. Si además viene el email y no coincide, se
+   *    responde como si no existiera (no confirmamos qué números son válidos).
+   *  - sólo email: los últimos MAX_ORDERS_BY_EMAIL pedidos de ese email.
+   * Ninguna respuesta trae datos personales del comprador (ver shapeOrderStatus).
    *
    * El número que ve el comprador puede no ser el id interno (plugins de numeración
    * secuencial): sólo aceptamos un pedido cuyo `number` coincida exactamente.
    */
-  async getOrderStatus(clientId: number, rawNumber: string, email: string) {
+  async getOrderStatus(clientId: number, input: { orderNumber?: string; email?: string }) {
     const conn = await this.requireConnection(clientId);
     const creds = credsOf(conn);
-    const needle = rawNumber.trim().replace(/^#/, '');
-    if (!needle) return { found: false, reason: 'No me pasaste un número de pedido.' };
-    if (!email.trim()) {
-      return { found: false, reason: 'Necesito el email con el que se hizo la compra para consultar el pedido.' };
+    const needle = (input.orderNumber ?? '').trim().replace(/^#/, '');
+    const email = (input.email ?? '').trim();
+    if (!needle && !email) {
+      return { found: false, reason: 'Necesito el número de pedido o el email con el que se hizo la compra.' };
+    }
+
+    if (!needle) {
+      // WooCommerce busca el texto en varios campos: nos quedamos sólo con los pedidos
+      // cuyo email de facturación es exactamente ése.
+      const results = await woocommerceApiService.searchOrders(creds, email);
+      const mine = results
+        .filter((o) => o.status !== 'trash' && orderBelongsTo(o, email))
+        .sort((a, b) => (b.date_created ?? '').localeCompare(a.date_created ?? ''))
+        .slice(0, MAX_ORDERS_BY_EMAIL);
+      if (mine.length === 0) {
+        return {
+          found: false,
+          reason: `No encontré pedidos hechos con el email ${email}. Pedile al comprador que revise el email o que te pase el número de pedido.`,
+        };
+      }
+      const orders = await mapLimit(mine, VARIATION_CONCURRENCY, async (o) =>
+        shapeOrderStatus(o, await woocommerceApiService.fetchCustomerNotes(creds, o.id).catch(() => [])),
+      );
+      return { found: true, count: orders.length, orders };
     }
 
     let order = /^\d+$/.test(needle) ? await woocommerceApiService.fetchOrder(creds, Number(needle)) : null;
@@ -506,10 +529,12 @@ export const woocommerceService = {
       const results = await woocommerceApiService.searchOrders(creds, needle);
       order = results.find((o) => String(o.number ?? o.id) === needle) ?? null;
     }
-    if (!order || order.status === 'trash' || !orderBelongsTo(order, email)) {
+    if (!order || order.status === 'trash' || (email && !orderBelongsTo(order, email))) {
       return {
         found: false,
-        reason: `No encontré ningún pedido con el número ${needle} para ese email. Pedile al comprador que revise el número y el email en el mail de confirmación de la compra.`,
+        reason: email
+          ? `No encontré ningún pedido con el número ${needle} para ese email. Pedile al comprador que revise el número y el email en el mail de confirmación de la compra.`
+          : `No encontré ningún pedido con el número ${needle}. Pedile al comprador que revise el número en el mail de confirmación de la compra.`,
       };
     }
     const notes = await woocommerceApiService.fetchCustomerNotes(creds, order.id).catch(() => []);
