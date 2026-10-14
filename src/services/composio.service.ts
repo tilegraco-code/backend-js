@@ -36,16 +36,36 @@ async function getOrCreateAuthConfig(toolkit: string): Promise<string> {
   const cached = authConfigCache.get(key);
   if (cached) return cached;
 
-  // 1) Reusar un authConfig gestionado ya existente para el toolkit.
-  const existing = await client().authConfigs.list({ toolkit: key, isComposioManaged: true, limit: 1 });
+  // 1) Reusar un authConfig ya existente para el toolkit (gestionado o custom).
+  const existing = await client().authConfigs.list({ toolkit: key, limit: 1 });
   const found = existing.items?.[0]?.id;
   if (found) {
     authConfigCache.set(key, found);
     return found;
   }
 
-  // 2) Crear uno gestionado (sin credenciales propias → consent muestra "Composio").
-  const created = await client().authConfigs.create(key, { type: 'use_composio_managed_auth' });
+  // 2) Composio tiene credenciales propias (OAuth de Gmail, Slack...) → gestionado.
+  const meta = await client().toolkits.get(key);
+  if ((meta.composioManagedAuthSchemes ?? []).length > 0) {
+    const created = await client().authConfigs.create(key, { type: 'use_composio_managed_auth' });
+    authConfigCache.set(key, created.id);
+    return created.id;
+  }
+
+  // 3) Toolkits con API key (ActiveCampaign...): Composio no tiene auth gestionada, pero
+  // si el esquema no pide credenciales nuestras al crear el authConfig, lo creamos custom
+  // vacío y la página hosted de `link` le pide la key (y URL, etc.) al cliente.
+  const scheme = meta.authConfigDetails?.find(
+    (d) => (d.fields?.authConfigCreation?.required ?? []).length === 0,
+  );
+  if (!scheme) {
+    throw new Error(`"${key}" requiere credenciales propias (OAuth app) para conectarse`);
+  }
+  const created = await client().authConfigs.create(key, {
+    type: 'use_custom_auth',
+    authScheme: scheme.mode as 'API_KEY',
+    credentials: {},
+  });
   authConfigCache.set(key, created.id);
   return created.id;
 }

@@ -8,6 +8,7 @@ const errorResponseSchema = z.object({ error: z.string() });
 // Mapea errores a HTTP: 409 si el cliente no conectó el toolkit, 4xx si Composio
 // devuelve un error de la API con status, 502 para el resto.
 function handleError(reply: FastifyReply, e: unknown): FastifyReply {
+  reply.log.error({ err: e }, 'composio: request falló');
   if (e instanceof ComposioNotConnectedError) {
     return reply.status(409).send({ error: e.message });
   }
