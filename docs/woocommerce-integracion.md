@@ -60,6 +60,17 @@ pedido. Nada de back-office (clientes, reportes, ajustes, webhooks).
   y de las notas sólo las marcadas para el cliente. Se acepta un pedido sólo si su `number`
   coincide exacto (plugins de numeración secuencial hacen que `number` ≠ `id`).
 
+- **Seguimiento del envío** (`tracking` en cada pedido): WooCommerce no lo trae de fábrica.
+  Se toma, en este orden: (1) plugins Shipment Tracking / AST (`wc-shipment-tracking/v3`);
+  (2) campos del pedido con nombre de seguimiento real (`tracking_number`, `seguimiento`…;
+  se ignoran las marcas `*_tracked` de los píxeles); (3) **ActiveCampaign** vía Composio, si
+  el cliente lo tiene conectado: contacto por email de facturación → deal creado más cerca
+  de la fecha del pedido (−12 h / +72 h) → campos del deal "Tracking URL", "Tracking…",
+  "Estado Envío…", "Último Evento…", "Fecha Estimada de Entrega"
+  (`activecampaign-tracking.*`, por `composioService.proxy`: no hay tool de Composio para
+  los campos de un deal). Caso real: Café Delirante (Andreani). Todo best-effort, con
+  timeout de 10 s: si falla, el pedido sale sin `tracking`.
+
 ## Checkout
 
 Crea un pedido `pending` y devuelve `payment_url` (página de pago del pedido). WooCommerce

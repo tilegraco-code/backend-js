@@ -281,6 +281,7 @@ export type WooOrder = {
   currency?: string;
   payment_url?: string;
   date_created?: string;
+  date_created_gmt?: string;
   date_paid?: string | null;
   date_completed?: string | null;
   payment_method_title?: string;

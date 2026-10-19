@@ -8,6 +8,8 @@
 // - Checkout: crea un pedido `pending` y devuelve su payment_url (la página de
 //   WooCommerce para pagar ese pedido). El envío lo define la config de la tool.
 import { supabase } from '../lib/supabase';
+import { activeCampaignTracking } from './activecampaign-tracking.service';
+import type { AcTracking } from './activecampaign-tracking.shape';
 import { signState } from '../lib/oauth-state';
 import { findConnection, listConnections, notConnectedMessage } from '../lib/integration-connection';
 import { filterByQuery } from '../lib/text-search';
@@ -111,6 +113,12 @@ async function fetchShapedCatalog(creds: WooCreds): Promise<ShapedProduct[]> {
         : [];
     return shapeProduct(p, variations);
   });
+}
+
+/** Id + fecha del pedido (UTC) para vincularlo con su deal de ActiveCampaign. */
+function orderRef(o: WooOrder): { id: number; date: string | null } {
+  const date = o.date_created_gmt ? `${o.date_created_gmt.replace(/Z$/, '')}Z` : (o.date_created ?? null);
+  return { id: o.id, date };
 }
 
 // Dos conversaciones que leen el mismo recurso con el caché vencido comparten el refetch.
@@ -549,7 +557,10 @@ export const woocommerceService = {
           note: 'Ese email no tiene pedidos en curso: todos sus pedidos ya están terminados (completados, cancelados o reembolsados). Si pregunta por uno en particular, pedile el número de pedido.',
         };
       }
-      const orders = await mapLimit(open, VARIATION_CONCURRENCY, (o) => this.shapeWithExtras(creds, o));
+      const external = await activeCampaignTracking.forOrders(clientId, email, open.map(orderRef));
+      const orders = await mapLimit(open, VARIATION_CONCURRENCY, (o) =>
+        this.shapeWithExtras(creds, o, external.get(o.id)),
+      );
       return { found: true, count: orders.length, orders };
     }
 
@@ -567,16 +578,20 @@ export const woocommerceService = {
           : `No encontré ningún pedido con el número ${needle}. Pedile al comprador que revise el número en el mail de confirmación de la compra.`,
       };
     }
-    return this.shapeWithExtras(creds, order);
+    const external = await activeCampaignTracking.forOrders(clientId, order.billing?.email, [orderRef(order)]);
+    return this.shapeWithExtras(creds, order, external.get(order.id));
   },
 
-  /** Pedido + notas para el cliente + seguimiento del envío (si la tienda tiene plugin). */
-  async shapeWithExtras(creds: WooCreds, order: WooOrder) {
+  /**
+   * Pedido + notas para el cliente + seguimiento del envío: el del plugin de la tienda si
+   * lo tiene, o el que llega de afuera (`external`, hoy ActiveCampaign).
+   */
+  async shapeWithExtras(creds: WooCreds, order: WooOrder, external?: AcTracking) {
     const [notes, trackings] = await Promise.all([
       woocommerceApiService.fetchCustomerNotes(creds, order.id).catch(() => []),
       woocommerceApiService.fetchShipmentTrackings(creds, order.id),
     ]);
-    return shapeOrderStatus(order, notes, trackings);
+    return shapeOrderStatus(order, notes, trackings, external ? [external] : []);
   },
 
   /** Lee la config de la tool verificando que sea de WooCommerce y de este cliente. */

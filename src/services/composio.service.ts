@@ -26,6 +26,11 @@ function client(): Composio {
 }
 
 const uid = (clientId: number): string => String(clientId);
+
+// Cuenta conectada por (cliente, toolkit) para `proxy`. Corto: si el cliente desconecta la
+// app, a los pocos minutos deja de usarse.
+const PROXY_ACCOUNT_TTL_MS = 5 * 60_000;
+const proxyAccountCache = new Map<string, { accountId: string | null; ts: number }>();
 const tk = (toolkit: string): string => toolkit.toLowerCase();
 
 // toolkit → authConfigId (gestionado). Cache de proceso; se repuebla al reiniciar.
@@ -318,6 +323,38 @@ export const composioService = {
     });
     const account = res.items?.[0] as { id?: string } | undefined;
     return { connected: Boolean(account), accountId: account?.id ?? null };
+  },
+
+  /**
+   * Llama un endpoint de la API de la app con la cuenta conectada del cliente (Composio
+   * pone la auth). Para lo que no tiene tool propia; ej. los campos personalizados de un
+   * deal de ActiveCampaign. Sin cuenta ACTIVE devuelve `{ connected: false }` sin llamar.
+   * El ID de la cuenta se cachea unos minutos: se usa en cada consulta de pedido.
+   */
+  async proxy(
+    clientId: number,
+    toolkit: string,
+    endpoint: string,
+    query: Record<string, string | number> = {},
+  ): Promise<{ connected: false } | { connected: true; status: number; data: unknown }> {
+    const key = `${clientId}:${tk(toolkit)}`;
+    const hit = proxyAccountCache.get(key);
+    let accountId: string | null;
+    if (hit && Date.now() - hit.ts < PROXY_ACCOUNT_TTL_MS) {
+      accountId = hit.accountId;
+    } else {
+      accountId = (await this.connectionStatus(clientId, toolkit)).accountId;
+      proxyAccountCache.set(key, { accountId, ts: Date.now() });
+    }
+    if (!accountId) return { connected: false };
+
+    const res = (await client().tools.proxyExecute({
+      endpoint,
+      method: 'GET',
+      connectedAccountId: accountId,
+      parameters: Object.entries(query).map(([name, value]) => ({ in: 'query' as const, name, value })),
+    })) as { status?: number; data?: unknown };
+    return { connected: true, status: res.status ?? 0, data: res.data };
   },
 
   /** Desconecta (borra) todas las cuentas del cliente para el toolkit. */

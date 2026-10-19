@@ -298,13 +298,25 @@ export function isOrderOpen(order: WooOrder): boolean {
   return !FINISHED_STATUSES.has(order.status ?? '');
 }
 
-export type ShapedTracking = { carrier: string | null; number: string | null; link: string | null; shipped: string | null };
+export type ShapedTracking = {
+  carrier: string | null;
+  number: string | null;
+  link: string | null;
+  shipped: string | null;
+  // Lo que informa el correo (hoy sólo viene de ActiveCampaign, ver activecampaign-tracking).
+  status?: string | null;
+  last_event?: string | null;
+  last_update?: string | null;
+  estimated_delivery?: string | null;
+};
 
 /**
  * Seguimiento del envío: primero lo de los plugins de tracking (endpoint propio) y, si
  * no hay, campos visibles del pedido cuyo nombre hable de seguimiento (otros plugins
  * guardan ahí el número o el link). Sin duplicados.
  */
+const TRACKING_META_KEY = /tracking[_\s-]?(number|nro|code|codigo|id|url|link)|seguimiento|rastreo|nro[_\s-]?(de[_\s-])?envio/i;
+
 export function extractTracking(order: WooOrder, trackings: WooShipmentTracking[]): ShapedTracking[] {
   const out: ShapedTracking[] = trackings
     .filter((t) => t.tracking_number || t.tracking_link)
@@ -319,11 +331,13 @@ export function extractTracking(order: WooOrder, trackings: WooShipmentTracking[
   let number: string | null = null;
   let link: string | null = null;
   for (const m of order.meta_data ?? []) {
-    if (!m.key || !/track|seguim|rastreo/i.test(m.key)) continue;
+    // Nombre de seguimiento de envío de verdad: "tracking" a secas también lo usan los
+    // píxeles de analítica (_gtmkit_order_tracked, _meta_purchase_tracked_* = "1").
+    if (!m.key || !TRACKING_META_KEY.test(m.key) || /tracked/i.test(m.key)) continue;
     const value = typeof m.value === 'string' || typeof m.value === 'number' ? String(m.value).trim() : '';
-    if (!value) continue;
     if (/^https?:\/\//i.test(value)) link ??= value;
-    else if (value.length <= 60) number ??= value;
+    // Un código de seguimiento: 6+ caracteres alfanuméricos con algún dígito (no "1"/"yes").
+    else if (/^[A-Z0-9-]{6,40}$/i.test(value) && /\d/.test(value)) number ??= value;
   }
   return number || link ? [{ carrier: null, number, link, shipped: null }] : [];
 }
@@ -332,8 +346,11 @@ export function shapeOrderStatus(
   order: WooOrder,
   notes: WooOrderNote[],
   trackings: WooShipmentTracking[] = [],
+  external: ShapedTracking[] = [],
 ): Record<string, unknown> {
-  const tracking = extractTracking(order, trackings);
+  // Lo de la tienda (plugin / campos del pedido) gana; si no hay, lo de fuera (ActiveCampaign).
+  const own = extractTracking(order, trackings);
+  const tracking = own.length ? own : external;
   const status = order.status ?? '';
   const known = ORDER_STATUS[status];
   const shippingLine = order.shipping_lines?.[0];
