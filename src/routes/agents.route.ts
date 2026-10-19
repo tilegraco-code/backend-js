@@ -245,17 +245,21 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
               }),
             )
             .optional(),
+          // Espera del canal antes de responder (el snippet web la manda desde su inbox).
+          // Ausente = default global del runtime.
+          response_delay_seconds: z.number().int().min(0).max(60).nullable().optional(),
         }),
         response: { 200: z.object({ ok: z.boolean() }), 400: errorResponseSchema },
       },
     },
     async (request, reply) => {
-      const { workflow_id, chat_id, message, nombre, channel, attachments } = request.body;
+      const { workflow_id, chat_id, message, nombre, channel, attachments, response_delay_seconds } =
+        request.body;
       if (!message && !attachments?.length) {
         return reply.status(400).send({ error: 'Se necesita message o attachments' });
       }
       void dispatchToRuntime(
-        { chat_id, question: message, nombre: nombre ?? 'Test', attachments },
+        { chat_id, question: message, nombre: nombre ?? 'Test', attachments, response_delay_seconds },
         workflow_id,
         channel ?? 'test',
         request.log,

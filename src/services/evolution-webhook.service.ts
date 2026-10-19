@@ -89,12 +89,13 @@ type ResolvedInbox = {
   client_id: number;
   workflow_id: number | null;
   suspended: boolean | null;
+  response_delay_seconds: number | null;
 };
 
 async function resolveInbox(instance: string): Promise<ResolvedInbox | null> {
   const { data } = await supabase
     .from('unipile_inboxes')
-    .select('id, client_id, workflow_id, suspended')
+    .select('id, client_id, workflow_id, suspended, response_delay_seconds')
     .eq('evolution_instance_name', instance)
     .eq('source', 'evolution')
     .maybeSingle();
@@ -276,6 +277,7 @@ export const evolutionWebhookService = {
               chat_id: chatId,
               nombre: contactName,
               question: contentText,
+              response_delay_seconds: inbox.response_delay_seconds,
             },
           },
         };

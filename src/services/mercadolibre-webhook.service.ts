@@ -36,6 +36,7 @@ type ResolvedInbox = {
   client_id: number;
   workflow_id: number | null;
   suspended: boolean | null;
+  response_delay_seconds: number | null;
 };
 
 // ---------- HELPERS ----------
@@ -116,7 +117,7 @@ function buildChatId(mlUserId: number, packId: string): string {
 async function resolveInbox(mlUserId: number): Promise<ResolvedInbox | null> {
   const { data } = await supabase
     .from('unipile_inboxes')
-    .select('id, client_id, workflow_id, suspended')
+    .select('id, client_id, workflow_id, suspended, response_delay_seconds')
     .eq('account_id', String(mlUserId))
     .eq('source', 'mercadolibre')
     .maybeSingle();
@@ -540,6 +541,7 @@ export const mercadolibreWebhookService = {
             nombre: contactName,
             question: contentText,
             attachments: stored.length > 0 ? await signAttachments(stored, log) : undefined,
+            response_delay_seconds: inbox.response_delay_seconds,
           },
         },
       };

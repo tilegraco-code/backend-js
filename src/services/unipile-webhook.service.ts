@@ -150,7 +150,7 @@ export const unipileWebhookService = {
     // Resolver client_id real desde unipile_inboxes.account_id (no del path)
     const { data: inbox } = await supabase
       .from('unipile_inboxes')
-      .select('client_id, workflow_id, suspended')
+      .select('client_id, workflow_id, suspended, response_delay_seconds')
       .eq('account_id', account_id)
       .maybeSingle();
 
@@ -309,6 +309,7 @@ export const unipileWebhookService = {
               // (`[imagen]`). Es lo que también se guarda en agentuse, así que la
               // fila sigue siendo legible en vez de quedar vacía.
               question: contentText,
+              response_delay_seconds: inbox.response_delay_seconds,
             },
           },
         };

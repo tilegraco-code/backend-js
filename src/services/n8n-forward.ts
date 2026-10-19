@@ -19,6 +19,12 @@ export type N8nForwardPayload = {
    * molesta y así el envelope sigue siendo uno solo para los dos caminos.
    */
   attachments?: ForwardAttachment[];
+  /**
+   * Segundos que espera la IA antes de responder, del canal por el que entró el
+   * mensaje (`unipile_inboxes.response_delay_seconds`). Ausente o null = default
+   * global del runtime. Como `attachments`, n8n lo ignora.
+   */
+  response_delay_seconds?: number | null;
 };
 
 /**

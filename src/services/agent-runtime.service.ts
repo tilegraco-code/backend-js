@@ -39,6 +39,8 @@ export async function invokeAgent(
     channel: string;
     attachments?: N8nForwardPayload['attachments'];
     extraContext?: Record<string, unknown>;
+    /** Espera del canal antes de responder. Ausente/null = default global del runtime. */
+    responseDelaySeconds?: number | null;
   },
   log: FastifyBaseLogger,
 ): Promise<InvokeResponse | null> {
@@ -67,6 +69,9 @@ export async function invokeAgent(
         // qué hacer con cada uno (ver docs/imagenes-y-documentos-plan.md); acá solo
         // se pasan. Ausente en los mensajes de solo texto.
         ...(input.attachments?.length ? { attachments: input.attachments } : {}),
+        ...(input.responseDelaySeconds != null
+          ? { debounce_seconds: input.responseDelaySeconds }
+          : {}),
       }),
     });
     if (!res.ok) {
@@ -138,6 +143,7 @@ export async function runViaAgent(
       senderName: payload.nombre,
       channel,
       attachments: payload.attachments,
+      responseDelaySeconds: payload.response_delay_seconds,
       ...(activeCase ? { extraContext: { case: activeCase } } : {}),
     },
     log,
