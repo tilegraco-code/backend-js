@@ -177,9 +177,9 @@ async function call(
   creds: WooCreds,
   method: 'GET' | 'POST',
   path: string,
-  opts: { query?: Query; body?: unknown } = {},
+  opts: { query?: Query; body?: unknown; namespace?: string } = {},
 ): Promise<{ data: unknown; res: RawResponse }> {
-  const url = new URL(`${creds.storeUrl}/wp-json/wc/v3${path}`);
+  const url = new URL(`${creds.storeUrl}/wp-json/${opts.namespace ?? 'wc/v3'}${path}`);
   for (const [k, v] of Object.entries(opts.query ?? {})) {
     if (v !== undefined) url.searchParams.set(k, String(v));
   }
@@ -289,6 +289,8 @@ export type WooOrder = {
   shipping?: { city?: string; state?: string; country?: string };
   billing?: { city?: string; state?: string; country?: string; email?: string };
   refunds?: { id: number; reason?: string; total?: string }[];
+  // Sólo las claves no protegidas (sin "_" adelante): WooCommerce oculta el resto.
+  meta_data?: { key?: string; value?: unknown }[];
   [key: string]: unknown;
 };
 
@@ -333,6 +335,14 @@ export type WooPaymentGateway = {
 };
 
 export type WooCountry = { code: string; name?: string; states?: { code: string; name: string }[] };
+
+export type WooShipmentTracking = {
+  tracking_id?: string;
+  tracking_provider?: string;
+  tracking_number?: string;
+  tracking_link?: string;
+  date_shipped?: string;
+};
 
 export type WooOrderNote = { id: number; note?: string; customer_note?: boolean; date_created?: string };
 
@@ -484,11 +494,28 @@ export const woocommerceApiService = {
   },
 
   /** Búsqueda libre de pedidos, los más nuevos primero (por número de plugin o por email). */
-  async searchOrders(creds: WooCreds, term: string): Promise<WooOrder[]> {
+  async searchOrders(creds: WooCreds, term: string, perPage = 20): Promise<WooOrder[]> {
     const { data } = await callOk(creds, 'GET', '/orders', {
-      query: { search: term, per_page: 20, orderby: 'date', order: 'desc' },
+      query: { search: term, per_page: perPage, orderby: 'date', order: 'desc' },
     });
     return (data as WooOrder[]) ?? [];
+  },
+
+  /**
+   * Seguimiento del envío cargado con los plugins "Shipment Tracking" (oficial) o
+   * "Advanced Shipment Tracking" (AST): los dos exponen este endpoint con las mismas
+   * claves. WooCommerce no trae seguimiento de fábrica: sin plugin la ruta no existe
+   * (404) y devolvemos []. Un error acá nunca debe tirar la consulta del pedido.
+   */
+  async fetchShipmentTrackings(creds: WooCreds, orderId: number): Promise<WooShipmentTracking[]> {
+    try {
+      const { data, res } = await call(creds, 'GET', `/orders/${orderId}/shipment-trackings`, {
+        namespace: 'wc-shipment-tracking/v3',
+      });
+      return res.status < 400 && Array.isArray(data) ? (data as WooShipmentTracking[]) : [];
+    } catch {
+      return [];
+    }
   },
 
   /** Sólo las notas que la tienda marcó para el cliente (las internas nunca salen). */

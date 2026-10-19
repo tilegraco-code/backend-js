@@ -11,11 +11,12 @@ import { supabase } from '../lib/supabase';
 import { signState } from '../lib/oauth-state';
 import { findConnection, listConnections, notConnectedMessage } from '../lib/integration-connection';
 import { filterByQuery } from '../lib/text-search';
-import { WooCountry, WooCreds, WooError, WooOrderInput, woocommerceApiService } from './woocommerce-api.service';
+import { WooCountry, WooCreds, WooError, WooOrder, WooOrderInput, woocommerceApiService } from './woocommerce-api.service';
 import {
   ShapedProduct,
   ZoneWithRules,
   matchShippingZone,
+  isOrderOpen,
   orderBelongsTo,
   resolveStateCode,
   shapeOrderStatus,
@@ -70,7 +71,7 @@ export type WoocommerceCheckoutInput = {
 export const AUTHORIZE_STATE_MAX_AGE_MS = 30 * 60_000;
 
 const MAX_SEARCH_RESULTS = 30;
-const MAX_ORDERS_BY_EMAIL = 5;
+const MAX_ORDERS_BY_EMAIL = 10; // tope de seguridad: en la práctica son 1 o 2 en curso
 const VARIATION_CONCURRENCY = 5;
 
 function ttlMs(): number {
@@ -505,7 +506,8 @@ export const woocommerceService = {
    * Estado de pedidos por número O email de la compra (decisión de producto, 2026-10-14):
    *  - número (+ email opcional): ese pedido. Si además viene el email y no coincide, se
    *    responde como si no existiera (no confirmamos qué números son válidos).
-   *  - sólo email: los últimos MAX_ORDERS_BY_EMAIL pedidos de ese email.
+   *  - sólo email: los pedidos de ese email que siguen en curso (no terminados: ver
+   *    isOrderOpen), hasta MAX_ORDERS_BY_EMAIL.
    * Ninguna respuesta trae datos personales del comprador (ver shapeOrderStatus).
    *
    * El número que ve el comprador puede no ser el id interno (plugins de numeración
@@ -527,20 +529,27 @@ export const woocommerceService = {
     if (!needle) {
       // WooCommerce busca el texto en varios campos: nos quedamos sólo con los pedidos
       // cuyo email de facturación es exactamente ése.
-      const results = await woocommerceApiService.searchOrders(creds, email);
-      const mine = results
-        .filter((o) => o.status !== 'trash' && orderBelongsTo(o, email))
-        .sort((a, b) => (b.date_created ?? '').localeCompare(a.date_created ?? ''))
-        .slice(0, MAX_ORDERS_BY_EMAIL);
+      const results = await woocommerceApiService.searchOrders(creds, email, 50);
+      const mine = results.filter((o) => o.status !== 'trash' && orderBelongsTo(o, email));
       if (mine.length === 0) {
         return {
           found: false,
           reason: `No encontré pedidos hechos con el email ${email}. Pedile al comprador que revise el email o que te pase el número de pedido.`,
         };
       }
-      const orders = await mapLimit(mine, VARIATION_CONCURRENCY, async (o) =>
-        shapeOrderStatus(o, await woocommerceApiService.fetchCustomerNotes(creds, o.id).catch(() => [])),
-      );
+      const open = mine
+        .filter(isOrderOpen)
+        .sort((a, b) => (b.date_created ?? '').localeCompare(a.date_created ?? ''))
+        .slice(0, MAX_ORDERS_BY_EMAIL);
+      if (open.length === 0) {
+        return {
+          found: true,
+          count: 0,
+          orders: [],
+          note: 'Ese email no tiene pedidos en curso: todos sus pedidos ya están terminados (completados, cancelados o reembolsados). Si pregunta por uno en particular, pedile el número de pedido.',
+        };
+      }
+      const orders = await mapLimit(open, VARIATION_CONCURRENCY, (o) => this.shapeWithExtras(creds, o));
       return { found: true, count: orders.length, orders };
     }
 
@@ -558,8 +567,16 @@ export const woocommerceService = {
           : `No encontré ningún pedido con el número ${needle}. Pedile al comprador que revise el número en el mail de confirmación de la compra.`,
       };
     }
-    const notes = await woocommerceApiService.fetchCustomerNotes(creds, order.id).catch(() => []);
-    return shapeOrderStatus(order, notes);
+    return this.shapeWithExtras(creds, order);
+  },
+
+  /** Pedido + notas para el cliente + seguimiento del envío (si la tienda tiene plugin). */
+  async shapeWithExtras(creds: WooCreds, order: WooOrder) {
+    const [notes, trackings] = await Promise.all([
+      woocommerceApiService.fetchCustomerNotes(creds, order.id).catch(() => []),
+      woocommerceApiService.fetchShipmentTrackings(creds, order.id),
+    ]);
+    return shapeOrderStatus(order, notes, trackings);
   },
 
   /** Lee la config de la tool verificando que sea de WooCommerce y de este cliente. */

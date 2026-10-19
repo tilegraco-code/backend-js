@@ -8,6 +8,7 @@ import type {
   WooProduct,
   WooProductDetail,
   WooReview,
+  WooShipmentTracking,
   WooVariation,
   WooZoneLocation,
   WooZoneMethod,
@@ -289,7 +290,50 @@ export function orderBelongsTo(order: WooOrder, email: string): boolean {
  * los necesita para contestar y así no quedan en la conversación. La ciudad alcanza
  * para confirmar el destino.
  */
-export function shapeOrderStatus(order: WooOrder, notes: WooOrderNote[]): Record<string, unknown> {
+// Estados en los que el pedido ya terminó (no hay nada más que seguir). Todo lo demás,
+// incluidos los estados propios de plugins (ej. "enviado"), cuenta como en curso.
+const FINISHED_STATUSES = new Set(['completed', 'cancelled', 'refunded', 'failed', 'trash', 'checkout-draft']);
+
+export function isOrderOpen(order: WooOrder): boolean {
+  return !FINISHED_STATUSES.has(order.status ?? '');
+}
+
+export type ShapedTracking = { carrier: string | null; number: string | null; link: string | null; shipped: string | null };
+
+/**
+ * Seguimiento del envío: primero lo de los plugins de tracking (endpoint propio) y, si
+ * no hay, campos visibles del pedido cuyo nombre hable de seguimiento (otros plugins
+ * guardan ahí el número o el link). Sin duplicados.
+ */
+export function extractTracking(order: WooOrder, trackings: WooShipmentTracking[]): ShapedTracking[] {
+  const out: ShapedTracking[] = trackings
+    .filter((t) => t.tracking_number || t.tracking_link)
+    .map((t) => ({
+      carrier: t.tracking_provider?.trim() || null,
+      number: t.tracking_number?.trim() || null,
+      link: t.tracking_link?.trim() || null,
+      shipped: t.date_shipped ? String(t.date_shipped).slice(0, 10) : null,
+    }));
+  if (out.length) return out;
+
+  let number: string | null = null;
+  let link: string | null = null;
+  for (const m of order.meta_data ?? []) {
+    if (!m.key || !/track|seguim|rastreo/i.test(m.key)) continue;
+    const value = typeof m.value === 'string' || typeof m.value === 'number' ? String(m.value).trim() : '';
+    if (!value) continue;
+    if (/^https?:\/\//i.test(value)) link ??= value;
+    else if (value.length <= 60) number ??= value;
+  }
+  return number || link ? [{ carrier: null, number, link, shipped: null }] : [];
+}
+
+export function shapeOrderStatus(
+  order: WooOrder,
+  notes: WooOrderNote[],
+  trackings: WooShipmentTracking[] = [],
+): Record<string, unknown> {
+  const tracking = extractTracking(order, trackings);
   const status = order.status ?? '';
   const known = ORDER_STATUS[status];
   const shippingLine = order.shipping_lines?.[0];
@@ -309,6 +353,7 @@ export function shapeOrderStatus(order: WooOrder, notes: WooOrderNote[]): Record
     payment_method: order.payment_method_title || null,
     shipping: shippingLine ? { method: shippingLine.method_title ?? null, cost: shippingLine.total ?? null, city } : city ? { city } : null,
     ...(unpaid && order.payment_url ? { payment_url: order.payment_url } : {}),
+    ...(tracking.length ? { tracking } : {}),
     refunds: (order.refunds ?? []).map((r) => ({ amount: (r.total ?? '').replace(/^-/, ''), reason: r.reason || null })),
     notes_from_store: notes
       .map((n) => ({ date: n.date_created?.slice(0, 10) ?? null, note: stripHtml(n.note, 500) ?? '' }))
