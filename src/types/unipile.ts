@@ -24,6 +24,8 @@ export type UnipileWebhookPayload = {
   timestamp: string;
   webhook_name?: string;
   is_sender?: boolean;
+  /** Reacciones y otros eventos que no son texto del usuario. */
+  is_event?: boolean | number;
   sender: UnipileSender;
   attendees?: UnipileSender[];
   attachments?: UnipileAttachment[];

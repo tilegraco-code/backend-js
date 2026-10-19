@@ -75,6 +75,17 @@ function resolveAccountStatus(message: string): UnipileAccountStatus | null {
   }
 }
 
+/** Textos con los que Instagram anuncia una reacción como si fuera un mensaje. */
+const INSTAGRAM_REACTION_TEXT = /^(liked a message|reacted .{1,16} to your message|le gustó un mensaje|reaccionó .{1,16} a tu mensaje)$/i;
+
+function isReactionEvent(payload: UnipileWebhookPayload): boolean {
+  // Unipile marca los eventos (reacciones, etc.) con `is_event` en el objeto mensaje;
+  // se respeta si viene en el webhook.
+  if (payload.is_event === true || payload.is_event === 1) return true;
+  if (payload.account_type !== 'INSTAGRAM' || !payload.message) return false;
+  return INSTAGRAM_REACTION_TEXT.test(payload.message.trim());
+}
+
 export const unipileWebhookService = {
   /**
    * Procesa el webhook principal de Unipile (message_received).
@@ -96,6 +107,14 @@ export const unipileWebhookService = {
     }
 
     const { account_id, account_type, chat_id, message_id, message, timestamp, sender } = payload;
+
+    // Instagram manda los likes/reacciones como `message_received` con un texto fijo
+    // ("Liked a message") en vez de como `message_reaction`. Si pasan, la IA le contesta
+    // a un corazón. No se persisten: tampoco aportan nada en la bandeja.
+    if (isReactionEvent(payload)) {
+      log.info({ account_type, message_id, message }, 'unipile: reacción ignorada');
+      return { ok: true, skipped: 'reaction' };
+    }
 
     // La forma exacta de los adjuntos de Unipile varía por proveedor y no está documentada
     // al detalle, así que se loguea cruda: es la única manera de saber por qué se descartó
