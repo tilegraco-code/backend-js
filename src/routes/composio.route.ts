@@ -57,7 +57,9 @@ export async function composioRoutes(app: FastifyInstance): Promise<void> {
         querystring: z.object({
           toolkit: z.string().min(1),
           search: z.string().optional(),
-          limit: z.coerce.number().int().positive().max(200).optional(),
+          // Alto a propósito: hay toolkits con cientos de tools (ActiveCampaign: 298) y la UI
+          // las trae todas para buscar por nombre. Composio devuelve todo en una página.
+          limit: z.coerce.number().int().positive().max(1000).optional(),
         }),
         response: { 200: z.unknown(), 502: errorResponseSchema },
       },
