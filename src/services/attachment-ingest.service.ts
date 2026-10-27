@@ -150,6 +150,32 @@ function slug(value: string): string {
 }
 
 /**
+ * Path de un archivo idéntico que el cliente ya tiene en el bucket, si hay.
+ *
+ * Sin esto, el catálogo en PDF que un negocio manda a cada cliente se guardaba entero una vez
+ * por chat: un PDF de 16 MB mandado a 53 chats eran 850 MB, y así se llenó el plan de Storage.
+ * Se busca dentro del mismo cliente porque el dashboard autoriza por el prefijo
+ * `<client_id>/` del path. Nada borra archivos del bucket, así que compartir el path es seguro.
+ *
+ * Si la búsqueda falla se sube igual: un archivo repetido es mejor que un adjunto perdido.
+ */
+async function findStoredCopy(clientId: number, hash: string, log: FastifyBaseLogger): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('chat_documents')
+    .select('storage_path')
+    .eq('client_id', clientId)
+    .eq('sha256', hash)
+    .order('id', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    log.warn({ err: error, clientId }, 'adjuntos: no se pudo buscar una copia previa — se sube igual');
+    return null;
+  }
+  return (data?.storage_path as string | undefined) ?? null;
+}
+
+/**
  * Baja, sube y firma los adjuntos de un mensaje.
  *
  * Está pensada para correr en background (después del ACK del webhook): bajar un
@@ -204,20 +230,25 @@ export async function ingestAttachments(
         continue;
       }
 
+      const hash = sha256(bytes);
+      const existing = await findStoredCopy(clientId, hash, log);
       const path =
+        existing ??
         `${clientId}/${slug(chatId)}/${slug(messageId)}/` +
-        `${index}.${extensionFor(mime, attachment.name)}`;
+          `${index}.${extensionFor(mime, attachment.name)}`;
 
-      const { error } = await supabase.storage.from(BUCKET).upload(path, bytes, {
-        contentType: mime,
-        // Idempotencia: si Unipile reintenta el webhook, se pisa el mismo archivo en
-        // vez de acumular copias con nombres distintos.
-        upsert: true,
-      });
+      if (!existing) {
+        const { error } = await supabase.storage.from(BUCKET).upload(path, bytes, {
+          contentType: mime,
+          // Idempotencia: si Unipile reintenta el webhook, se pisa el mismo archivo en
+          // vez de acumular copias con nombres distintos.
+          upsert: true,
+        });
 
-      if (error) {
-        log.error({ err: error, messageId, path }, 'adjuntos: upload a Storage falló');
-        continue;
+        if (error) {
+          log.error({ err: error, messageId, path }, 'adjuntos: upload a Storage falló');
+          continue;
+        }
       }
 
       const item: StoredAttachment = {
@@ -233,7 +264,7 @@ export async function ingestAttachments(
       // docs/documentos-y-casos-plan.md). Va acá y no en cada canal para que ninguno pueda
       // olvidarse. No lanza: un registro fallido no le quita el adjunto al turno.
       const { inlineId } = await chatDocumentsService.register(
-        { clientId, chatId, messageId, idx: index, stored: item, sha256: sha256(bytes) },
+        { clientId, chatId, messageId, idx: index, stored: item, sha256: hash },
         log,
       );
       if (inlineId != null) inlineIds.push(inlineId);
