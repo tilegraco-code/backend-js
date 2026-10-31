@@ -70,6 +70,13 @@ export type MercadolibreOrder = {
   buyer?: { id?: number | string; nickname?: string };
   seller?: { id?: number | string };
   shipping?: { id?: number };
+  payments?: {
+    status?: string;
+    status_detail?: string | null;
+    payment_type?: string;
+    installments?: number;
+    date_approved?: string | null;
+  }[];
   tags?: string[];
   [key: string]: unknown;
 };
@@ -198,24 +205,110 @@ export type MercadolibreQuestion = {
 /** Subset de GET /items/{id}: lo que le sirve al agente para responder. */
 export type MercadolibreItem = {
   id: string;
+  seller_id?: number;
   title?: string;
   price?: number;
+  original_price?: number | null;
   currency_id?: string;
   available_quantity?: number;
+  sold_quantity?: number;
   condition?: string;
   permalink?: string;
   thumbnail?: string;
   secure_thumbnail?: string;
   status?: string;
   warranty?: string | null;
-  shipping?: { free_shipping?: boolean; local_pick_up?: boolean };
+  sale_terms?: { id?: string; name?: string; value_name?: string | null }[];
+  shipping?: {
+    free_shipping?: boolean;
+    local_pick_up?: boolean;
+    mode?: string;
+    logistic_type?: string;
+  };
   attributes?: { id?: string; name?: string; value_name?: string | null }[];
   variations?: {
     id?: number;
+    price?: number;
     available_quantity?: number;
     attribute_combinations?: { name?: string; value_name?: string | null }[];
   }[];
   [key: string]: unknown;
+};
+
+/** Respuesta de GET /users/{id}/items/search: solo ids, el detalle sale del multiget. */
+export type MercadolibreItemSearch = {
+  results?: string[];
+  paging?: { total?: number; offset?: number; limit?: number };
+};
+
+/** Un elemento del multiget GET /items?ids=: cada id trae su propio código. */
+export type MercadolibreMultigetEntry = { code: number; body: MercadolibreItem };
+
+// ---------- Envíos ----------
+
+/** Subset de GET /items/{id}/shipping_options?zip_code=. */
+export type MercadolibreShippingOption = {
+  id?: number;
+  name?: string;
+  display?: string;
+  cost?: number;
+  list_cost?: number;
+  currency_id?: string;
+  shipping_method_type?: string;
+  estimated_delivery_time?: {
+    date?: string | null;
+    type?: string;
+    unit?: string;
+    shipping?: number | null;
+    handling?: number | null;
+  } | null;
+};
+
+export type MercadolibreShippingOptions = {
+  options?: MercadolibreShippingOption[];
+  destination?: { city?: { name?: string }; state?: { name?: string }; zip_code?: string };
+  [key: string]: unknown;
+};
+
+/**
+ * Subset de GET /shipments/{id} con `x-format-new: true` (el formato viejo está
+ * deprecado). Modelado a la defensiva: los campos de fechas cambian de lugar entre
+ * logísticas, así que se aceptan las dos ubicaciones que documenta ML.
+ */
+export type MercadolibreShipment = {
+  id: number;
+  status?: string;
+  substatus?: string | null;
+  tracking_number?: string | null;
+  tracking_method?: string | null;
+  logistic?: { mode?: string; type?: string } | null;
+  logistic_type?: string;
+  status_history?: Record<string, string | null> | null;
+  lead_time?: {
+    estimated_delivery_time?: { date?: string | null } | null;
+    shipping_method?: { name?: string } | null;
+  } | null;
+  destination?: {
+    shipping_address?: { city?: { name?: string }; state?: { name?: string } };
+  } | null;
+  [key: string]: unknown;
+};
+
+/** Subset de GET /packs/{id}: un carrito con varias órdenes. */
+export type MercadolibrePack = {
+  id: number;
+  status?: string;
+  orders?: { id: number }[];
+  shipment?: { id?: number } | null;
+  [key: string]: unknown;
+};
+
+/** Subset de GET /sites/{site}/payment_methods. */
+export type MercadolibrePaymentMethod = {
+  id: string;
+  name?: string;
+  payment_type_id?: string;
+  status?: string;
 };
 
 // ---------- Action guide ----------

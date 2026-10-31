@@ -5,9 +5,15 @@ import type {
   MercadolibreActionGuide,
   MercadolibreConversation,
   MercadolibreItem,
+  MercadolibreItemSearch,
   MercadolibreMessage,
+  MercadolibreMultigetEntry,
   MercadolibreOrder,
+  MercadolibrePack,
+  MercadolibrePaymentMethod,
   MercadolibreQuestion,
+  MercadolibreShipment,
+  MercadolibreShippingOptions,
   MercadolibreTokenResponse,
   MercadolibreUser,
 } from '../types/mercadolibre';
@@ -110,9 +116,9 @@ async function tokenRequest(body: URLSearchParams): Promise<MercadolibreTokenRes
 }
 
 /** GET contra la API con el token del vendedor. */
-async function get<T>(path: string, token: string): Promise<T> {
+async function get<T>(path: string, token: string, headers: Record<string, string> = {}): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { Authorization: `Bearer ${token}`, accept: 'application/json' },
+    headers: { Authorization: `Bearer ${token}`, accept: 'application/json', ...headers },
   });
 
   const text = await res.text();
@@ -226,6 +232,64 @@ export const mercadolibreApiService = {
       token,
     );
     return d.plain_text?.trim() || null;
+  },
+
+  /**
+   * Publicaciones del vendedor (solo ids). `q` filtra por texto del título.
+   * NOTE: el filtro `q` sale de la doc de "Ítems y búsquedas" del vendedor; sin verificar
+   * contra una cuenta real.
+   */
+  async searchSellerItems(
+    sellerId: number | string,
+    token: string,
+    opts: { query?: string; limit: number; offset?: number },
+  ): Promise<MercadolibreItemSearch> {
+    const params = new URLSearchParams({ status: 'active', limit: String(opts.limit) });
+    if (opts.query) params.set('q', opts.query);
+    if (opts.offset) params.set('offset', String(opts.offset));
+    return get<MercadolibreItemSearch>(`/users/${sellerId}/items/search?${params}`, token);
+  },
+
+  /** Multiget de publicaciones (ML acepta hasta 20 ids por llamada). */
+  async fetchItems(ids: string[], token: string): Promise<MercadolibreMultigetEntry[]> {
+    if (ids.length === 0) return [];
+    const params = new URLSearchParams({ ids: ids.slice(0, 20).join(',') });
+    return get<MercadolibreMultigetEntry[]>(`/items?${params}`, token);
+  },
+
+  /** Costo y plazo de envío de una publicación a un código postal. */
+  async fetchShippingOptions(
+    itemId: string,
+    zipCode: string,
+    token: string,
+  ): Promise<MercadolibreShippingOptions> {
+    const params = new URLSearchParams({ zip_code: zipCode });
+    return get<MercadolibreShippingOptions>(
+      `/items/${encodeURIComponent(itemId)}/shipping_options?${params}`,
+      token,
+    );
+  },
+
+  async fetchPack(packId: number | string, token: string): Promise<MercadolibrePack> {
+    return get<MercadolibrePack>(`/packs/${packId}`, token);
+  },
+
+  /** `x-format-new` porque el formato viejo de /shipments está deprecado. */
+  async fetchShipment(shipmentId: number | string, token: string): Promise<MercadolibreShipment> {
+    return get<MercadolibreShipment>(`/shipments/${shipmentId}`, token, { 'x-format-new': 'true' });
+  },
+
+  /**
+   * Facturas cargadas en una venta. Se direcciona por pack (o por la orden si no hay
+   * carrito), igual que la mensajería. Necesita el permiso de facturación de la app.
+   */
+  async fetchFiscalDocuments(packOrOrderId: number | string, token: string): Promise<unknown> {
+    return get<unknown>(`/packs/${packOrOrderId}/fiscal_documents`, token);
+  },
+
+  /** Medios de pago del país (no son por vendedor: ML cobra por todos). */
+  async fetchPaymentMethods(siteId: string, token: string): Promise<MercadolibrePaymentMethod[]> {
+    return get<MercadolibrePaymentMethod[]>(`/sites/${encodeURIComponent(siteId)}/payment_methods`, token);
   },
 
   /** Perfil público de un usuario: lo usamos solo por el nickname del comprador. */
