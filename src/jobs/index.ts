@@ -4,6 +4,7 @@ import { registerExampleJob } from './example.job';
 import { registerUnipileFollowUpJob } from './unipile-follow-up.job';
 import { registerAccountLifecycleJob } from './account-lifecycle.job';
 import { registerUsageBillingJob } from './usage-billing.job';
+import { registerPaymentReconcileJob } from './payment-reconcile.job';
 import { registerLearningsJob } from './learnings.job';
 import { registerTokenBackfillJob } from './usage-tokens.job';
 import { registerMercadolibreQuestionsPollJob } from './mercadolibre-questions-poll.job';
@@ -25,6 +26,7 @@ export function startJobs(log: FastifyBaseLogger): void {
     registerUnipileFollowUpJob(log),
     registerAccountLifecycleJob(log),
     registerUsageBillingJob(log),
+    registerPaymentReconcileJob(log),
     registerLearningsJob(log),
     registerTokenBackfillJob(log),
     registerMercadolibreQuestionsPollJob(log),
