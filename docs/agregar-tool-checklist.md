@@ -23,7 +23,9 @@
   - `buildXName()` + `buildXDescription()` (la descripción es lo que ve el LLM: explicá QUÉ hace y el FORMATO de input exacto).
   - bloque de render condicionado a la acción.
   - validaciones + `finalName`/`finalDescription`/`config` en `handleSave`.
-- [ ] **`components/workflows/agent-tools-panel.tsx`** → sumar la acción al menú (labels + entry en `INTEGRATIONS` + label en la lista de tools).
+- [ ] **`lib/catalog/tools.ts`** → sumar el label en `<X>_ACTION_LABELS` y la acción en `TOOL_CATALOG` con su `capability` (y `writes: true` si escribe del lado del proveedor). De acá leen el panel y el copiloto (`GET /api/catalog/tools`): si no está acá, el copiloto no sabe que existe.
+- [ ] **`lib/api-contracts/agentTools.ts`** → sumar la acción al enum de `actions` del tipo (si no, `POST /api/agents/[id]/tools` la rechaza).
+- [ ] **`components/workflows/agent-tools-panel.tsx`** → sumar la entry en `INTEGRATIONS` (si es un tipo nuevo) + label en la lista de tools.
 - [ ] (Si el form necesita datos en vivo, ej. columnas/archivos) → ruta proxy en `app/api/.../route.ts` (auth por sesión con `getUserWithClient`, reenvía al backend con `INTERNAL_API_KEY`).
 
 ### Backend (solo si la acción reenvía al backend)
