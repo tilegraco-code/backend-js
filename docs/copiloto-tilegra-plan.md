@@ -243,6 +243,23 @@ También hay una lista explícita de **imposibles**, con una alternativa para ca
 
 El estado sale de cruzar: el registro, las conexiones del cliente (`GET /api/integrations`), los canales (`GET /api/unipile/inboxes`) y el plan (`GET /api/plans`). **No pasa por el LLM.**
 
+### 3.3b Avance Fase 2A (2026-11-21, probado en local 21/21)
+
+Hecho en dashboard-tilegra:
+- `lib/catalog/capabilities.ts`: 29 capacidades + 3 imposibles (llamadas, cobrar con tarjeta en el chat, escribir primero a contactos nuevos).
+  - Las nativas salen de `TOOL_CATALOG` (no se duplican).
+  - Las de Composio usan slugs verificados contra la API.
+  - Las de serie: derivación, conocimiento, documentos, casos, seguimiento.
+- Búsqueda por palabras (`searchCapabilities`): ignora acentos y plurales y puntúa por palabras distintas. Probada con 10 pedidos reales.
+- `lib/services/capabilities.ts`:
+  - `resolveCapabilities`: estados enabled / available / needs_setup / needs_connection / impossible / unknown, más `summary` en castellano.
+  - `enableCapability`: crea la tool nativa con el mismo nombre y descripción que la UI (`lib/catalog/toolDescriptions.ts`, extraído del formulario) o suma tools de Composio respetando `MAX_COMPOSIO_TOOLS`; después refresca el runtime.
+- Endpoints: `GET /api/capabilities`, `GET /api/capabilities/search?q=`, `POST /api/capabilities/resolve`, `GET/POST /api/agents/[id]/capabilities`.
+
+Hallazgo: `PATCH /api/tools/[id]` (prender/apagar una tool desde la UI) **no refresca el cache del runtime LangGraph**: el cambio entra recién cuando vence el cache. `enableCapability` sí refresca.
+
+Pendiente (Fase 2B): sync del catálogo completo de Composio a una tabla con embeddings + búsqueda semántica para los pedidos que no matchean la lista curada.
+
 ### 3.4 Endpoints
 - `GET /api/capabilities`: catálogo completo de nativas + imposibles.
 - `GET /api/capabilities/search?q=`: búsqueda semántica (nativas + Composio).
