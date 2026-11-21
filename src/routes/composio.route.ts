@@ -197,6 +197,40 @@ export async function composioRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // POST /api/composio/resource → verifica un recurso que el dueño eligió para una acción
+  // (hoy: una planilla de Google Sheets) con SU cuenta conectada, y devuelve qué es.
+  r.post(
+    '/resource',
+    {
+      schema: {
+        tags: ['composio'],
+        summary: 'Verifica un recurso de una app conectada (ej. planilla de Google Sheets) y devuelve sus datos',
+        security: [{ InternalToken: [] }],
+        body: z.object({
+          client_id: z.coerce.number().int().positive(),
+          kind: z.enum(['google_sheet']),
+          value: z.string().min(1).max(500),
+        }),
+        response: {
+          200: z.object({ id: z.string(), title: z.string().nullable(), tabs: z.array(z.string()) }),
+          400: errorResponseSchema,
+          502: errorResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const { client_id, value } = request.body;
+        return await composioService.googleSheetInfo(client_id, value);
+      } catch (e) {
+        if ((e as Error).message?.startsWith('No reconozco')) {
+          return reply.status(400).send({ error: (e as Error).message });
+        }
+        return handleError(reply, e);
+      }
+    },
+  );
+
   // GET /api/composio/status?client_id=&toolkit=
   r.get(
     '/status',

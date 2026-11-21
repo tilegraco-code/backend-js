@@ -6,6 +6,7 @@
 // (uno por toolkit, no por cliente). `getOrCreateAuthConfig` lo resuelve la 1ra vez
 // (busca el gestionado existente o lo crea) y lo cachea en memoria del proceso.
 import { Composio } from '@composio/core';
+import { extractGoogleSheetId, findSheetTabs, findSheetTitle } from '../lib/google-sheet';
 import { supabase } from '../lib/supabase';
 
 export class ComposioNotConnectedError extends Error {
@@ -311,6 +312,41 @@ export const composioService = {
     return out;
   },
 
+  /**
+   * Argumentos fijos de las tools de Composio del agente (`agentprops.mcp_tool_args`):
+   * `{ SLUG: { param: valor } }`. Los eligió el dueño al configurar la acción (ej. qué planilla
+   * lee el Buddy). El runtime los saca del esquema que ve el LLM y los inyecta al ejecutar.
+   */
+  async getAgentToolArgs(agentId: number): Promise<Record<string, Record<string, unknown>>> {
+    const { data, error } = await supabase
+      .from('agentprops')
+      .select('mcp_tool_args')
+      .eq('agent_id', agentId)
+      .maybeSingle();
+    if (error) throw error;
+    const raw = (data as { mcp_tool_args?: unknown } | null)?.mcp_tool_args;
+    if (!raw || Array.isArray(raw) || typeof raw !== 'object') return {};
+    const out: Record<string, Record<string, unknown>> = {};
+    for (const [slug, args] of Object.entries(raw as Record<string, unknown>)) {
+      if (args && typeof args === 'object' && !Array.isArray(args)) out[slug] = args as Record<string, unknown>;
+    }
+    return out;
+  },
+
+  /**
+   * Verifica una planilla de Google Sheets con la cuenta del cliente y devuelve su título y
+   * pestañas (para que el dueño elija cuál lee el Buddy). Acepta el link o el id.
+   */
+  async googleSheetInfo(clientId: number, value: string): Promise<{ id: string; title: string | null; tabs: string[] }> {
+    const id = extractGoogleSheetId(value);
+    if (!id) throw new Error('No reconozco ese link de Google Sheets');
+    const data = await this.execute(clientId, 'googlesheets', 'GOOGLESHEETS_GET_SPREADSHEET_INFO', {
+      spreadsheet_id: id,
+      fields: 'properties.title,sheets.properties.title',
+    });
+    return { id, title: findSheetTitle(data), tabs: findSheetTabs(data) };
+  },
+
   /** ¿El cliente tiene una cuenta ACTIVE para el toolkit? */
   async connectionStatus(
     clientId: number,
@@ -421,3 +457,4 @@ export const composioService = {
     return res.data;
   },
 };
+

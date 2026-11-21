@@ -85,6 +85,9 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
             // Tipos de caso activos. Vacío = el agente no trabaja con casos y el runtime no le
             // adjunta las tools de casos. Ver docs/documentos-y-casos-plan.md.
             case_types: z.array(z.object({ key: z.string(), label: z.string(), description: z.string() })),
+            // Argumentos fijos de las tools de Composio: { SLUG: { param: valor } } (ej. qué
+            // planilla lee). El runtime los oculta del esquema del LLM y los inyecta al ejecutar.
+            tool_args: z.record(z.string(), z.record(z.string(), z.unknown())),
           }),
           502: errorResponseSchema,
         },
@@ -106,7 +109,7 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
           | 'router';
         const isRouter = agent_type === 'router';
 
-        const [system_message, tools, apiToolsRes, routesRes, case_types] = await Promise.all([
+        const [system_message, tools, apiToolsRes, routesRes, case_types, tool_args] = await Promise.all([
           isRouter
             ? agentSystemMessageService.buildRouterInstructions(agentId)
             : agentSystemMessageService.build(agentId),
@@ -129,6 +132,9 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
             : Promise.resolve({ data: [] as Record<string, unknown>[] }),
           // Un router no abre casos: los abren sus ramas, cada una con su config.
           isRouter ? Promise.resolve([]) : casesService.listActiveTypes(agentId),
+          isRouter
+            ? Promise.resolve({} as Record<string, Record<string, unknown>>)
+            : composioService.getAgentToolArgs(agentId),
         ]);
 
         const api_tools = (apiToolsRes.data ?? []).map((t) => ({
@@ -184,6 +190,7 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
           agent_type,
           routes,
           case_types,
+          tool_args,
         };
       } catch (e) {
         return reply.status(502).send({ error: (e as Error)?.message ?? 'Error desconocido' });
