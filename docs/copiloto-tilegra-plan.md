@@ -343,6 +343,34 @@ El grafo hace streaming por SSE de mensajes + eventos `ui`:
 
 La respuesta del usuario (click en Aprobar, OAuth terminado) vuelve como `Command(resume=...)`.
 
+### 4.5b Avance Fase 3 (2026-11-21)
+
+**Hecho:**
+- `agente-tilegra` (rama `copiloto-fase-3`): `app/copilot/graph.py` con el flujo de onboarding de §4.2.
+  - Hay diferencias con el plan original: `capabilities` corre antes de `pick_template`, no hay nodo `scrape_site` (la web se carga en `configure`, después de aprobar) y `connect_channel`/`test` se devuelven como tarjetas en `final.next`.
+  - Endpoint `POST /copilot/turn` con bearer interno + `X-User-Token`.
+  - 18 tests con LLM y API falsos: flujo completo, sin escrituras antes de aprobar, el agente se crea una sola vez, errores explicados con el hint, el token no queda en el checkpointer.
+- Probado con `gpt-5-mini` real + API falsa: pregunta lo que falta, entiende el pedido, aplica cambios de estilo, crea y configura.
+- La prueba con el modelo real encontró dos problemas, ya arreglados:
+  - El borrador prometía un imposible ("gestiono llamados"). Ahora recibe `Puede hacer` / `No puede hacer` del resolver.
+  - El modelo sumaba capacidades que nadie pidió (CRM). Se ajustó el prompt.
+- `dashboard-tilegra`: proxy `POST /api/copilot`. El `thread_id` sale de la sesión y se reenvía el access_token.
+
+**Contrato de un turno** (`/api/copilot` → `/copilot/turn`):
+- Request: `{ message?, resume?, conversation? }`.
+  - `resume` responde a la tarjeta pendiente: `{approved, feedback}` en la aprobación o `{connected, provider}` en conectar.
+  - Si viene `message` mientras hay una pausa, se usa como respuesta (en la aprobación = pedido de cambios).
+- Response: `{ messages: string[], waiting: {type: question|approval|connect, ...} | null, done, final }`.
+
+**Variables nuevas:**
+- dashboard: `AGENT_RUNTIME_URL`.
+- agente-tilegra: `DASHBOARD_URL` y, opcional, `COPILOT_MODEL`.
+
+**Falta:**
+- Modo libre (router de §4.3) para editar un agente ya creado.
+- UI chat-first (Fase 4).
+- Prueba punta a punta con los dos servidores levantados.
+
 ### 4.6 Modelo y costo
 - Un modelo bueno para `intake`/`draft`/`router` y uno chico para extracción y clasificación.
 - Loguear tokens por thread. El uso del copiloto **no** descuenta créditos del cliente (es costo de adquisición).
