@@ -197,6 +197,44 @@ export async function composioRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // GET /api/composio/search?client_id=&q= → busca una app en TODO el catálogo de Composio.
+  r.get(
+    '/search',
+    {
+      schema: {
+        tags: ['composio'],
+        summary: 'Busca apps en el catálogo completo de Composio (marca las que el cliente ya conectó)',
+        security: [{ InternalToken: [] }],
+        querystring: z.object({
+          client_id: z.coerce.number().int().positive(),
+          q: z.string().min(1).max(80),
+        }),
+        response: {
+          200: z.object({
+            toolkits: z.array(
+              z.object({
+                slug: z.string(),
+                name: z.string(),
+                logo: z.string().nullable(),
+                description: z.string().nullable(),
+                exact: z.boolean(),
+                connected: z.boolean(),
+              }),
+            ),
+          }),
+          502: errorResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        return { toolkits: await composioService.searchToolkits(request.query.client_id, request.query.q) };
+      } catch (e) {
+        return handleError(reply, e);
+      }
+    },
+  );
+
   // POST /api/composio/resource → verifica un recurso que el dueño eligió para una acción
   // (hoy: una planilla de Google Sheets) con SU cuenta conectada, y devuelve qué es.
   r.post(

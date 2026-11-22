@@ -151,10 +151,58 @@ function toMeta(tool: {
   };
 }
 
+type RawToolkit = {
+  slug: string;
+  name?: string;
+  deprecated?: unknown;
+  meta?: { logo?: string | null; description?: string | null };
+};
+
+export type SearchedToolkit = {
+  slug: string;
+  name: string;
+  logo: string | null;
+  description: string | null;
+  /** El nombre coincide exacto con lo buscado (ej. "pipedrive"). */
+  exact: boolean;
+  /** El cliente ya tiene una cuenta conectada de esta app. */
+  connected: boolean;
+};
+
 export const composioService = {
   /** Toolkits disponibles (para el browse en la UI). Cacheado en proceso (ver TTL). */
   async listToolkits() {
     return await getToolkitList();
+  },
+
+  /**
+   * Busca apps en TODO el catálogo de Composio (1800+, la lista cacheada corta en 1000) por
+   * nombre. Devuelve las que coinciden, la exacta primero, y si el cliente ya la tiene conectada.
+   * Si no devuelve nada, la app no está en Composio (no "no la encontré en la primera página").
+   */
+  async searchToolkits(clientId: number, q: string): Promise<SearchedToolkit[]> {
+    const query = q.trim();
+    if (!query) return [];
+    // El SDK de alto nivel no expone búsqueda ni cursor: se usa su cliente HTTP.
+    const raw = (await (client() as unknown as {
+      client: { toolkits: { list: (p: Record<string, unknown>) => Promise<{ items?: RawToolkit[] }> } };
+    }).client.toolkits.list({ search: query, limit: 10 })) ?? {};
+    const norm = (v: string) => v.toLowerCase().normalize('NFD').replace(/[^a-z0-9]/g, '');
+    const nq = norm(query);
+    // `deprecated` viene como objeto de metadata (no booleano): solo se descarta si es true.
+    const items = (raw.items ?? []).filter((t) => t?.slug && t.deprecated !== true);
+    const connected = new Set((await this.listConnectedToolkits(clientId).catch(() => [])).map((t) => t.slug.toLowerCase()));
+    const rank = (t: RawToolkit) => (norm(t.slug) === nq || norm(t.name ?? '') === nq ? 0 : norm(t.name ?? '').startsWith(nq) ? 1 : 2);
+    return items
+      .sort((a, b) => rank(a) - rank(b))
+      .map((t) => ({
+        slug: t.slug.toLowerCase(),
+        name: t.name ?? t.slug,
+        logo: t.meta?.logo ?? null,
+        description: t.meta?.description ?? null,
+        exact: rank(t) === 0,
+        connected: connected.has(t.slug.toLowerCase()),
+      }));
   },
 
   /**
