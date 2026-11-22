@@ -198,6 +198,48 @@ export async function agentsRoute(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // POST /api/agents/:agentId/tool-errors → el runtime registra las herramientas que fallaron en
+  // un turno (Composio, HTTP propias, nativas). Las lee el copiloto para avisar al dueño.
+  r.post(
+    '/:agentId/tool-errors',
+    {
+      schema: {
+        tags: ['agents'],
+        summary: 'Registra fallas de herramientas de un turno del agente (las lee el copiloto)',
+        security: [{ InternalToken: [] }],
+        params: z.object({ agentId: z.coerce.number().int().positive() }),
+        body: z.object({
+          client_id: z.coerce.number().int().positive().optional(),
+          errors: z
+            .array(
+              z.object({
+                tool: z.string().min(1).max(200),
+                source: z.enum(['composio', 'http', 'native', 'other']).default('other'),
+                error: z.string().min(1).max(2000),
+              }),
+            )
+            .min(1)
+            .max(20),
+        }),
+        response: { 200: z.object({ ok: z.boolean(), saved: z.number() }) },
+      },
+    },
+    async (request) => {
+      const { agentId } = request.params;
+      const { client_id, errors } = request.body;
+      const rows = errors.map((e) => ({
+        agent_id: agentId,
+        client_id: client_id ?? null,
+        tool: e.tool,
+        source: e.source,
+        error: e.error.slice(0, 500),
+      }));
+      const { error } = await supabase.from('agent_tool_errors').insert(rows);
+      if (error) request.log.warn({ err: error.message, agentId }, 'tool-errors insert');
+      return { ok: !error, saved: error ? 0 : rows.length };
+    },
+  );
+
   // POST /api/agents/:agentId/refresh-runtime → el dashboard avisa que cambió la config del
   // agente; el backend refresca el cache del runtime si es LangGraph (no-op si es n8n).
   r.post(
